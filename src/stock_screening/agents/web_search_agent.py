@@ -1,37 +1,40 @@
 """
-Web Search Agent
+Web Search Agent (Research Coordinator)
 
-Searches the web for Indian stock news using OpenAI's WebSearchTool.
-Returns structured news items with inline citations.
-
-Run standalone:
-    python -m src.stock_screening.agents.web_search_agent "Latest news on TCS"
+Uses GPT-4o-mini to coordinate research tasks using the Perplexity Search API.
+Supports multiple searches with advanced filters (recency).
 """
 
-from pydantic_ai import Agent
-from pydantic_ai.builtin_tools import WebSearchTool, WebSearchUserLocation
+import json
+from typing import Literal, Optional
+
+import httpx
+from pydantic_ai import Agent, RunContext
 from pydantic_ai.messages import ModelMessage, TextPart
 
+from stock_screening.config import get_settings
 from stock_screening.logging_config import get_logger
-from stock_screening.models.constants import ALLOWED_DOMAINS, WEB_SEARCH_MODEL_SETTINGS
-from stock_screening.models.llm import get_model, llm_service, with_default_context
+from stock_screening.models.constants import ALLOWED_DOMAINS
+from stock_screening.models.llm import get_model, with_default_context
 from stock_screening.models.outputs import WebSearchResponse
 from stock_screening.models.types import AgentType
 
 logger = get_logger(__name__)
 
-SYSTEM_PROMPT = """You are a financial news research agent for Indian NSE/BSE stocks.
+SYSTEM_PROMPT = """You are a financial news research coordinator for Indian NSE/BSE stocks.
 
-SEARCH GUIDELINES:
-- Focus on recent news (respect any time constraints in the query)
-- Include timestamps (IST) when available
-- Cross-check media reports with NSE/SEBI filings when possible
-- Add inline domain citations after facts: "TCS Q3 revenue grew 8% YoY [livemint.com]"
-- Use the most authoritative source (NSE filing > media report)
-- Raise cases where the news is conflicting or unclear across sources.
-- Separate facts from analyst opinions
+Use the `search_web` tool to fulfill research tasks.
+
+CRITICAL OUTPUT RULES:
+1. You MUST populate `news_items` with information from the tool's "answer" field.
+2. Extract key facts from the tool result and create NewsItem entries.
+3. Each NewsItem needs: what_happened (the fact) and why_it_matters (significance).
+4. Never return empty news_items - always extract at least one fact from tool results.
+
+TOOL USAGE:
+- Use `recency` parameter for time filtering: 'hour', 'day', 'week', 'month', 'year'.
+- Call the tool multiple times if needed for comprehensive data.
 """
-
 
 # -----------------------------------------------------------------------------
 # Agent Definition
@@ -41,41 +44,112 @@ web_search_agent: Agent[None, WebSearchResponse] = with_default_context(Agent(
     get_model(AgentType.WEB_SEARCH),
     system_prompt=SYSTEM_PROMPT,
     output_type=WebSearchResponse,
-    builtin_tools=[
-        WebSearchTool(
-            search_context_size="high",
-            user_location=WebSearchUserLocation(country="IN", city="Mumbai"),
-            allowed_domains=ALLOWED_DOMAINS,
-        ),
-    ],
 ))
 
+@web_search_agent.tool
+async def search_web(
+    ctx: RunContext[None],
+    query: str,
+    recency: Optional[Literal["hour", "day", "week", "month", "year"]] = None,
+) -> str:
+    """
+    Search the web for Indian stock news using Perplexity API.
+
+    Args:
+        ctx: The run context.
+        query: The search query.
+        recency: Optional recency filter ('hour', 'day', 'week', 'month', 'year').
+    """
+    s = get_settings()
+    if not s.perplexity_api_key:
+        raise ValueError("PERPLEXITY_API_KEY is required for direct API search.")
+
+    logger.info("Perplexity API call: query=%s, recency=%s", query, recency)
+
+    payload = {
+        "model": s.llm_perplexity_model_id,
+        "messages": [{"role": "user", "content": query}],
+        "search_domain_filter": ALLOWED_DOMAINS,
+    }
+
+    if recency:
+        payload["search_recency_filter"] = recency
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        try:
+            response = await client.post(
+                "https://api.perplexity.ai/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {s.perplexity_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json=payload
+            )
+            if response.status_code != 200:
+                logger.error("Perplexity API error: %d - %s", response.status_code, response.text)
+            response.raise_for_status()
+            data = response.json()
+        except httpx.HTTPStatusError as e:
+            return json.dumps({
+                "error": f"API Error: {e.response.status_code}",
+                "details": e.response.text
+            })
+
+    # Extract answer, citations, and search_results (richer metadata)
+    answer = data["choices"][0]["message"]["content"]
+    citations = data.get("citations", [])
+    search_results = data.get("search_results", [])
+    
+    # Resolve inline [1], [2] markers to clickable [[1]](url) links
+    import re
+    def resolve_citation(match: re.Match) -> str:
+        num = int(match.group(1))
+        if 1 <= num <= len(citations):
+            return f"[[{num}]]({citations[num - 1]})"
+        return match.group(0)
+    answer_with_links = re.sub(r"\[(\d+)\]", resolve_citation, answer)
+    
+    # Check if the answer indicates no results found
+    no_results_keywords = ["no results", "could not find", "no information", "no reports", "no news"]
+    has_results = not any(k in answer.lower() for k in no_results_keywords) or len(citations) > 0
+
+    return json.dumps({
+        "answer": answer_with_links,
+        "citations": citations,
+        "search_results": search_results,
+        "has_results": has_results
+    })
 
 # -----------------------------------------------------------------------------
 # Helpers
 # -----------------------------------------------------------------------------
 
-
 def extract_sources_from_messages(messages: list[ModelMessage]) -> list[dict[str, str]]:
-    """Extract unique source URLs from OpenAI annotations in message history."""
+    """Extract unique source URLs with titles from Perplexity API tool outputs."""
     sources: list[dict[str, str]] = []
     seen_urls: set[str] = set()
 
     for msg in messages:
         for part in getattr(msg, "parts", []):
-            if isinstance(part, TextPart) and part.provider_details:
-                for ann in part.provider_details.get("annotations", []):
-                    if ann.get("type") == "url_citation":
-                        url = ann.get("url", "")
+            from pydantic_ai.messages import ToolReturnPart
+            if isinstance(part, ToolReturnPart):
+                try:
+                    data = json.loads(part.content)
+                    citations = data.get("citations", [])
+                    search_results = data.get("search_results", [])
+                    
+                    # Build URL -> title map from search_results
+                    url_to_title = {r.get("url"): r.get("title") for r in search_results if r.get("url")}
+                    
+                    for url in citations:
                         if url and url not in seen_urls:
                             seen_urls.add(url)
-                            sources.append({
-                                "title": ann.get("title", ""),
-                                "url": url,
-                            })
+                            title = url_to_title.get(url) or "Source"
+                            sources.append({"title": title, "url": url})
+                except (json.JSONDecodeError, TypeError):
+                    continue
 
     return sources
-
 
 # -----------------------------------------------------------------------------
 # Standalone Runner
@@ -84,77 +158,39 @@ def extract_sources_from_messages(messages: list[ModelMessage]) -> list[dict[str
 if __name__ == "__main__":
     import argparse
     import asyncio
-
     from stock_screening.logging_config import setup_logging
+    from stock_screening.models.llm import llm_service
 
     async def main() -> None:
-        parser = argparse.ArgumentParser(description="Web search agent for Indian stock news")
+        parser = argparse.ArgumentParser(description="Web search coordinator for Indian stock news")
         parser.add_argument("query", nargs="*", help="Search query")
-        parser.add_argument("--days", "-d", type=int, default=7, help="Days back (default: 7)")
         args = parser.parse_args()
 
         setup_logging(level="INFO")
-        logger.info("Web search agent starting")
+        logger.info("Web search coordinator starting")
 
         query = " ".join(args.query) if args.query else input("Search query: ").strip()
         if not query:
             print("No query provided")
             return
 
-        days_back = args.days if args.days > 0 else None
-        time_note = f" (last {days_back} days)" if days_back else ""
-        full_query = f"{query}{time_note}"
-
-        logger.info("Searching: %s", full_query)
-        print(f"\nSearching: {full_query}\n")
-
-        result = await llm_service.run_agent(
-            web_search_agent, full_query, model_settings=WEB_SEARCH_MODEL_SETTINGS
-        )
+        logger.info("Coordinating research for: %s", query)
+        
+        result = await llm_service.run_agent(web_search_agent, query)
         output = result.output
-
-        # Extract sources from annotations
         sources = extract_sources_from_messages(result.all_messages())
 
-        # Print results
-        print("=" * 60)
+        print("\n" + "=" * 60)
         print(f"RESULTS: {len(output.news_items)} news items | {len(sources)} sources")
         print("=" * 60)
 
-        if output.news_items:
-            print("\n📰 NEWS ITEMS:")
-            print("-" * 40)
-            for i, item in enumerate(output.news_items, 1):
-                print(f"\n{i}. {item.what_happened}")
-                if item.event_time_ist:
-                    print(f"   🕐 {item.event_time_ist}")
-                print(f"   💡 {item.why_it_matters}")
-                if item.how_did_customers_react:
-                    print(f"   📈 {item.how_did_customers_react}")
-        else:
-            print("\n⚠️  No news items found.")
-
-        if output.overall_market_reaction:
-            print(f"\n📊 OVERALL MARKET REACTION:\n   {output.overall_market_reaction}")
-
-        if output.analyst_commentary:
-            print(f"\n🎙️  ANALYST COMMENTARY:\n   {output.analyst_commentary}")
+        for i, item in enumerate(output.news_items, 1):
+            print(f"\n{i}. {item.what_happened}")
+            print(f"   💡 {item.why_it_matters}")
 
         if sources:
-            print("\n" + "-" * 40)
-            print("🔗 SOURCES:")
-            for src in sources:
-                title = src['title'][:60] + "..." if len(src['title']) > 60 else src['title']
-                print(f"   • {title}")
-                print(f"     {src['url']}")
-
-        # Status
-        print("\n" + "=" * 60)
-        if output.satisfied:
-            print("✅ Search complete")
-        else:
-            print("⏳ Search incomplete")
-            if output.next_query:
-                print(f"   Suggested follow-up: {output.next_query}")
+            print("\n🔗 SOURCES:")
+            for i, src in enumerate(sources, 1):
+                print(f"   • {src['url']}")
 
     asyncio.run(main())

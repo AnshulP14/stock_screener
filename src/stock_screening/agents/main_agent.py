@@ -97,9 +97,12 @@ def format_final_response(
     routing_info: str = "",
 ) -> str:
     """Format final response with sources, filters, and suggestions for display."""
+    # Inline citations are already resolved to links at the tool level
+    message = result.message
+    
     # Build parts
     agent_label = f"**Agent:** {result.agent_used}" if result.agent_used else ""
-    parts = [routing_info, agent_label, "", result.message]
+    parts = [routing_info, agent_label, "", message]
     parts = [p for p in parts if p]
 
     # Add filters if available (from screening)
@@ -112,8 +115,16 @@ def format_final_response(
     # Add sources if available (from web search)
     if sources:
         source_lines = ["### 🔗 Sources", ""]
-        for src in sources:
-            source_lines.append(f"- [{src['title']}]({src['url']})")
+        for i, src in enumerate(sources, 1):
+            title = src.get('title', 'Source')
+            if title == 'Source':
+                # Try to make a cleaner title from URL if possible
+                from urllib.parse import urlparse
+                domain = urlparse(src['url']).netloc
+                title = domain.replace('www.', '')
+            # Ensure URL is properly formatted and clickable
+            url = src['url'].strip()
+            source_lines.append(f"{i}. [{title}]({url})")
         parts.append("\n".join(source_lines))
 
     # Add follow-up suggestion
@@ -256,12 +267,16 @@ router_agent = with_default_context(Agent(
 SYNTHESIS_SYSTEM_PROMPT = """You are the response synthesis agent for a stock research assistant (Indian NSE/BSE).
 
 You receive:
-1. Recent conversation (prior turns only—the current user request and raw agent output are provided separately below)
+1. Recent conversation (prior turns only)
 2. The current user request
 3. The task that was executed and which sub-agent was used
 4. The raw output from that sub-agent (web search or screening)
 
-Your job: Write a single, clear, well-formatted final response to the user. Use the conversation to sound natural (e.g. refer to what was discussed). Preserve all key facts, numbers, companies, and conclusions. Use markdown for structure (headings, bold, lists) where helpful. Do not add facts not in the agent output. Do not repeat the user's question or the raw output verbatim—synthesize. Sources will be listed separately by the UI."""
+CRITICAL RULES:
+1. Your response MUST be faithful to the raw agent output. Do NOT contradict it or add your own knowledge.
+2. PRESERVE ALL INLINE LINKS: The agent output contains markdown links like [[1]](url). You MUST keep these EXACTLY as-is in your response. Do NOT remove, reformat, or renumber them.
+
+Your job: Reformat the agent output into a clear, user-friendly response. Preserve ALL facts, numbers, events, and inline citation links from the agent output. Use markdown for structure."""
 
 synthesis_agent = with_default_context(Agent(
     get_model("synthesis"),
@@ -614,8 +629,26 @@ async def run_web_search_agent(
     )
 
 
-def _format_web_search_output(output) -> str:
-    """Format web search output into markdown."""
+def _extract_raw_tool_answers(messages: list) -> str:
+    """Extract raw answer content from tool results as fallback."""
+    from pydantic_ai.messages import ToolReturnPart
+    import json
+    
+    answers = []
+    for msg in messages:
+        for part in getattr(msg, "parts", []):
+            if isinstance(part, ToolReturnPart):
+                try:
+                    data = json.loads(part.content)
+                    if isinstance(data, dict) and "answer" in data:
+                        answers.append(data["answer"])
+                except (json.JSONDecodeError, TypeError):
+                    continue
+    return "\n\n---\n\n".join(answers)
+
+
+def _format_web_search_output(output, messages: list = None) -> str:
+    """Format web search output into markdown. Falls back to raw tool answers if news_items empty."""
     lines = []
     if output.news_items:
         lines.append("### 📰 News")
@@ -640,7 +673,16 @@ def _format_web_search_output(output) -> str:
         lines.append("")
         lines.append(output.analyst_commentary)
         lines.append("")
-    return "\n".join(lines).strip() if lines else "*No news found.*"
+    
+    formatted = "\n".join(lines).strip()
+    
+    # Fallback: if no structured content but we have messages, use raw tool answers
+    if not formatted and messages:
+        raw = _extract_raw_tool_answers(messages)
+        if raw:
+            return f"### 📰 Search Results\n\n{raw}"
+    
+    return formatted if formatted else "*No news found.*"
 
 
 async def run_web_search_agent_stream(

@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     # Reasoning effort for o-series: "low" | "medium" | "high"
     llm_openai_reasoning_effort: str | None = Field(default="medium", description="OpenAI reasoning effort")
     # OpenAI Responses API model (for web search) - gpt-4o supports domain filters
-    llm_openai_responses_model_id: str = "gpt-4o"
+    llm_openai_responses_model_id: str = "gpt-4o-mini"
 
     # --- Anthropic (e.g. claude-sonnet-4-5) ---
     llm_anthropic_model_id: str = "claude-sonnet-4-5"
@@ -45,25 +45,20 @@ class Settings(BaseSettings):
     llm_google_thinking_level: str | None = Field(default="low", description="Gemini thinking level")
     llm_google_thinking_budget: int | None = Field(default=None, description="Gemini thinking budget (overrides level if set)")
 
-    # --- Router (main agent: gemini-3-flash with thinking) ---
-    llm_router_model_id: str = Field(default="gemini-3-flash-preview", description="Router model (Gemini 3 Flash: gemini-3-flash-preview)")
+    # --- Router (main agent: gemini with thinking) ---
+    llm_router_model_id: str = Field(default="gemini-2.5-flash", description="Router model — override with e.g. gemini-2.5-pro or gemini-3-flash-preview")
     llm_router_thinking_level: str = Field(default="medium", description="Router thinking level: low | medium | high")
     llm_router_thinking_budget: int | None = Field(default=None, description="Router thinking budget (overrides level if set)")
 
     # --- Optional: tools ---
     financial_api_key: str | None = None
     web_search_api_key: str | None = None
+    perplexity_api_key: str | None = None
 
-    # --- Jeeves integration (optional) ---
-    jeeves_enabled: bool = Field(
-        default=False, description="Enable jeeves-core integration for distributed execution"
-    )
-    jeeves_kernel_url: str = Field(
-        default="localhost:50051", description="jeeves-core kernel gRPC URL"
-    )
-    jeeves_redis_url: str | None = Field(
-        default=None, description="Redis URL for distributed state (required if jeeves_enabled=True)"
-    )
+    # --- Perplexity (e.g. sonar) ---
+    llm_perplexity_model_id: str = "sonar"
+    llm_perplexity_temperature: float = 0.2
+    llm_perplexity_max_tokens: int = 4096
 
 
 @lru_cache

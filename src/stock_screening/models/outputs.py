@@ -1,6 +1,6 @@
 """Structured outputs from each Pydantic AI agent."""
 
-from typing import Any, Optional, Union
+from typing import Any, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -68,8 +68,9 @@ class WebSearchResponse(BaseAgentResponse):
     """Structured output from web search agent."""
 
     news_items: list[NewsItem] = Field(
-        default_factory=list,
-        description="List of verified news items, each with facts and significance"
+        ...,
+        min_length=1,
+        description="List of news items extracted from search results. MUST contain at least 1 item."
     )
     overall_market_reaction: Optional[str] = Field(
         default=None,

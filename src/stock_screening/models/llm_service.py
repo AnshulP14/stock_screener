@@ -31,15 +31,41 @@ def _extract_tool_results(messages: list) -> dict[str, str]:
 
     results = {}
     for msg in messages:
-        if hasattr(msg, "parts"):
-            for part in msg.parts:
-                if isinstance(part, ToolReturnPart):
-                    tool_call_id = getattr(part, "tool_call_id", "") or ""
-                    content = part.content if hasattr(part, "content") else str(part)
-                    # Truncate long results
-                    if isinstance(content, str) and len(content) > 500:
-                        content = content[:500] + "..."
-                    results[tool_call_id] = content
+        # Check if message has parts attribute
+        parts = getattr(msg, "parts", None)
+        if parts is None:
+            continue
+        
+        # Iterate through parts to find ToolReturnPart
+        for part in parts:
+            if isinstance(part, ToolReturnPart):
+                tool_call_id = getattr(part, "tool_call_id", None)
+                if tool_call_id is None:
+                    continue
+                
+                # Extract content - try different attributes
+                content = None
+                if hasattr(part, "content"):
+                    content = part.content
+                elif hasattr(part, "result"):
+                    content = part.result
+                elif hasattr(part, "data"):
+                    content = part.data
+                else:
+                    content = str(part)
+                
+                # Convert to string if needed
+                if not isinstance(content, str):
+                    if hasattr(content, "__str__"):
+                        content = str(content)
+                    else:
+                        import json
+                        try:
+                            content = json.dumps(content, indent=2)
+                        except (TypeError, ValueError):
+                            content = repr(content)
+                
+                results[tool_call_id] = content
     return results
 
 
@@ -76,37 +102,71 @@ class LLMService:
             - tool_call: name, args, tool_call_id, timestamp
             - result: output, messages, usage (tokens), duration_ms
         """
-        from pydantic_ai.messages import ToolCallPart
+        from pydantic_ai.messages import ToolCallPart, ToolReturnPart
         from pydantic_graph import End
 
         start_time = time.perf_counter()
         pending_tool_calls: dict[str, dict] = {}  # Track tool calls by id
+        tool_results: dict[str, str] = {}  # Track tool results by tool_call_id
 
         async with agent.iter(prompt, **kwargs) as run:
             async for node in run:
                 if isinstance(node, End):
                     break
-                # CallToolsNode contains tool calls in model_response.parts
+                
+                # Extract tool calls from model_response
                 if hasattr(node, "model_response"):
                     for part in node.model_response.parts:
                         if isinstance(part, ToolCallPart):
                             tool_call_id = getattr(part, "tool_call_id", "") or ""
+                            
+                            # Ensure args is handled safely (during streaming it can be a JSON string)
+                            args = part.args
+                            if isinstance(args, str):
+                                try:
+                                    import json
+                                    args = json.loads(args)
+                                except (json.JSONDecodeError, TypeError):
+                                    # Keep as string if not valid JSON (e.g. partial stream or raw string)
+                                    pass
+                            
                             tool_data = {
                                 "type": "tool_call",
                                 "name": part.tool_name,
-                                "args": part.args if hasattr(part, "args") else {},
+                                "args": args,
                                 "tool_call_id": tool_call_id,
                                 "timestamp": time.time(),
                             }
                             pending_tool_calls[tool_call_id] = tool_data
                             yield tool_data
+                
+                # Extract tool results from nodes (they may be in tool_result or similar)
+                if hasattr(node, "tool_result"):
+                    tool_result = node.tool_result
+                    if hasattr(tool_result, "tool_call_id"):
+                        tool_call_id = tool_result.tool_call_id
+                        content = getattr(tool_result, "content", None) or getattr(tool_result, "result", None) or str(tool_result)
+                        tool_results[tool_call_id] = content
+                
+                # Also check for ToolReturnPart in node messages if available
+                if hasattr(node, "messages"):
+                    for msg in node.messages:
+                        parts = getattr(msg, "parts", None)
+                        if parts:
+                            for part in parts:
+                                if isinstance(part, ToolReturnPart):
+                                    tool_call_id = getattr(part, "tool_call_id", None)
+                                    if tool_call_id:
+                                        content = getattr(part, "content", None) or getattr(part, "result", None) or str(part)
+                                        tool_results[tool_call_id] = content
 
             # Calculate duration and extract usage
             duration_ms = (time.perf_counter() - start_time) * 1000
             messages = run.result.all_messages()
 
-            # Extract tool results and match to calls
-            tool_results = _extract_tool_results(messages)
+            # Extract tool results from final messages (merge with any found during streaming)
+            final_tool_results = _extract_tool_results(messages)
+            tool_results.update(final_tool_results)
 
             # Extract usage from result
             usage_data = {}

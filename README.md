@@ -89,25 +89,6 @@ uv run python -m stock_screening.agents.main_agent
 
 The UI streams responses, shows tool calls (with args and truncated results), and displays token/cost breakdown (router, agent, synthesis).
 
-## Jeeves Integration (Optional)
-
-For production deployment with resource management, distributed execution, and multi-user support, see [Jeeves Integration Guide](docs/jeeves-integration.md).
-
-**Features:**
-- Resource quotas (LLM calls, tokens, iterations)
-- Distributed architecture (multi-user, horizontal scaling)
-- Production-ready API gateway (FastAPI/WebSocket)
-- Rate limiting and cost control
-- Observability (metrics, tracing)
-
-**Installation:**
-```bash
-pip install -e ".[jeeves]"
-# Requires: jeeves-core (Rust), Redis
-```
-
-See `docs/jeeves-integration.md` and `docs/jeeves-migration-guide.md` for details.
-
 ## Extending
 
 - **New agent**: Add a module under `agents/`, define a Pydantic AI `Agent` and output model, then in `main_agent` add a branch in the router output (e.g. new `AgentType`), an `execute` branch, and optionally a streaming runner.

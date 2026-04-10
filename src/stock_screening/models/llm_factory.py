@@ -71,7 +71,9 @@ def _build_anthropic() -> ModelT:
         "max_tokens": s.llm_anthropic_max_tokens,
     }
     if s.llm_anthropic_thinking_budget is not None and s.llm_anthropic_thinking_budget > 0:
-        settings_dict["anthropic_thinking"] = {"budget_tokens": s.llm_anthropic_thinking_budget}
+        settings_dict["anthropic_thinking"] = {"type": "enabled", "budget_tokens": s.llm_anthropic_thinking_budget}
+        # When thinking is enabled, temperature must be 1
+        settings_dict["temperature"] = 1.0
 
     settings = AnthropicModelSettings(**settings_dict)
     provider = AnthropicProvider(api_key=s.anthropic_api_key)
@@ -114,7 +116,7 @@ def _build_google() -> ModelT:
 
 
 def _build_router() -> ModelT:
-    """Router: gemini-3-flash with thinking on (separate from default gemini)."""
+    """Router: Gemini with thinking enabled. Falls back to gemini-2.5-flash if preview unavailable."""
     from pydantic_ai.models.google import GoogleModel, GoogleModelSettings
     from pydantic_ai.providers.google import GoogleProvider
 
@@ -122,24 +124,26 @@ def _build_router() -> ModelT:
     if not s.google_api_key:
         raise ValueError("GOOGLE_API_KEY is required for router (Gemini) model.")
 
+    model_id = s.llm_router_model_id
+
     settings_dict: dict[str, Any] = {
         "temperature": 0.2,
         "max_tokens": 8192,
     }
+
+    # Thinking config: only apply if model supports it (non-2.5-flash variants)
     thinking: dict[str, Any] = {}
-    if s.llm_router_thinking_budget is not None and s.llm_router_thinking_budget > 0:
-        thinking["thinking_budget"] = s.llm_router_thinking_budget
-    else:
-        thinking["thinking_level"] = s.llm_router_thinking_level
-    settings_dict["google_thinking_config"] = thinking
+    if "gemini-2.5-flash" not in model_id:
+        if s.llm_router_thinking_budget is not None and s.llm_router_thinking_budget > 0:
+            thinking["thinking_budget"] = s.llm_router_thinking_budget
+        elif s.llm_router_thinking_level:
+            thinking["thinking_level"] = s.llm_router_thinking_level
+    if thinking:
+        settings_dict["google_thinking_config"] = thinking
 
     settings = GoogleModelSettings(**settings_dict)
     provider = GoogleProvider(api_key=s.google_api_key)
-    return GoogleModel(
-        s.llm_router_model_id,
-        provider=provider,
-        settings=settings,
-    )
+    return GoogleModel(model_id, provider=provider, settings=settings)
 
 
 def _build_synthesis() -> ModelT:
@@ -175,7 +179,7 @@ _BUILDERS = {
 # Agent type -> model (provider) name. Use get_model(agent_type) or get_model(model_name).
 AGENT_MODEL_MAP: dict[str, str] = {
     AgentType.SCREENING: "claude",
-    AgentType.WEB_SEARCH: "openai_responses",  # gpt-4o with domain filters
+    AgentType.WEB_SEARCH: "openai_responses",  # gpt-4o-mini as coordinator
 }
 
 
