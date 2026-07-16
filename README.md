@@ -1,96 +1,126 @@
 # Stock Screening — Multi-Agent System
 
-A chat-based stock research assistant for **Indian NSE500 stocks**. You ask in natural language; an LLM **router** classifies your intent and routes to either **screening** (fundamental filters, screener tools) or **web search** (news, market reaction). A **synthesis** step formats the final answer. Built with **Pydantic AI** (agents + tools).
+A chat-based stock research assistant for **Indian NSE500 stocks**. You ask in natural language; an LLM **router** classifies the intent and routes to either **screening** (fundamental filters over local data) or **web search** (news via Perplexity). A **synthesis** step formats the final answer. Built with **Pydantic AI**.
 
 ## Architecture
 
-- **Main orchestrator** (`main_agent`): Classifies the user query → routes to one of two sub-agents → runs the chosen agent → synthesizes a final response (with optional follow-up suggestion).
-- **Screening agent**: Interprets natural language (e.g. “value stocks with low P/E”), calls `screen_stocks` and related tools (sectors, industries, `get_stock_details`), returns structured output with applied filters.
-- **Web search agent**: Handles news and “what happened in the markets” queries; uses web search and returns structured news items, market reaction, and sources.
-- **Synthesis**: Same LLM as router (no thinking) formats the sub-agent result into a clear reply and may add a follow-up suggestion.
+Every query follows one path — there is no second, non-streaming implementation:
 
-No LangGraph; orchestration is done in the main agent (router → execute → synthesize).
+```
+route_query_stream(deps, query, context, force_agent)
+  ├─ classify_intent()        → RoutingDecision(agent, tasks, success_criteria)   [Gemini]
+  ├─ _run_sub_agent_stream()  → screening_agent | web_search_agent, looped up to
+  │                             MAX_ITERATIONS until output.completed             [Claude | GPT]
+  └─ synthesize_response()    → final user-facing message                         [Gemini]
+```
+
+It yields `routing` → `tool_call`* → `final` events. The `final` event carries the response plus a
+trace merging token usage and USD cost across all three LLM stages.
+
+`route_query` is a thin wrapper that drains the stream and returns just the response.
 
 ## Project Structure
 
 ```
-stock_screening/
-├── src/stock_screening/
-│   ├── config.py              # Settings (API keys, model names)
-│   ├── models/                # Pydantic request/response, state, LLM factory
-│   │   ├── outputs.py         # ScreeningResponse, WebSearchResponse, RoutingDecision, etc.
-│   │   ├── types.py           # AgentType (screening | web_search)
-│   │   ├── llm.py             # Thin wrapper / context
-│   │   ├── llm_factory.py     # get_model(agent_name), OpenAI/Anthropic/Google
-│   │   └── ...
-│   ├── tools/
-│   │   └── stock_screener.py  # screen_stocks, get_stock_details, sectors, industries
-│   ├── agents/
-│   │   ├── base.py            # AgentDeps
-│   │   ├── main_agent.py      # Router, route_query, chat_stream, run_*_agent_stream
-│   │   ├── screening_agent.py # Screening agent + tools
-│   │   └── web_search_agent.py# Web search agent
-│   └── ui/
-│       └── screening_ui.py    # Gradio chat UI (streaming, tool cards, trace/cost)
-├── pyproject.toml
-└── README.md
+src/stock_screening/
+├── api.py                  # FastAPI: SSE chat endpoint + data-refresh job runner
+├── static/index.html       # Chat UI (vanilla JS, no build step)
+├── config.py               # Settings — every field overridable by env var
+├── logging_config.py
+├── agents/
+│   ├── base.py             # AgentDeps: per-session state
+│   ├── main_agent.py       # Router, sub-agent loop, synthesis, cost merge, CLI
+│   ├── screening_agent.py  # Screening agent + its tools
+│   └── web_search_agent.py # Web search agent + Perplexity search_web tool
+├── models/
+│   ├── outputs.py          # Structured agent outputs (field descriptions are prompts)
+│   ├── types.py            # AgentType
+│   ├── constants.py        # Iteration/context limits, allowed news domains
+│   ├── llm_factory.py      # get_model(agent_or_role) → cached Pydantic AI model
+│   ├── llm_service.py      # run_agent (retry) + run_agent_stream (tool events)
+│   └── context_providers.py# Dynamic system-prompt context (e.g. current date)
+└── tools/
+    └── stock_screener.py   # screen_stocks, get_companies, list_* — reads data/
 ```
+
+Data lives in `data/` as JSON produced by `scripts/`, not in a database.
 
 ## Setup
 
 ```bash
-cd stock_screening
-uv sync   # or: pip install -e .
+uv sync                          # or: pip install -e .
+python scripts/setup_data.py     # downloads data/ — required, see below
 ```
 
-Set environment variables (or use `.env`). Copy `.env.example` and set keys for the providers you use:
+The data set is **not in git**. It lives as a zip on Google Drive and `setup_data.py` fetches and
+unpacks it into `data/`. Point it at the link with `--url`, `$STOCK_SCREENING_DATA_URL`, or by
+filling in `DATA_URL` in the script. This step is not optional: importing the package reads
+`data/indices/by_industry.json` at module load, so without it even `import stock_screening` fails.
 
-- `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GOOGLE_API_KEY` (set those needed for router and chosen sub-agents)
-- `DEFAULT_LLM=openai` | `claude` | `gemini` (used by `get_default_model()`; router/agents use their own mapping)
-- Optional: `FINANCIAL_API_KEY`, `WEB_SEARCH_API_KEY` for tools
+Set keys in `.env` (project root) or `~/.env`:
 
-### Per-Agent Model Assignment
+- `GOOGLE_API_KEY` — router + synthesis (required for every query)
+- `ANTHROPIC_API_KEY` — screening agent
+- `OPENAI_API_KEY` — web search agent
+- `PERPLEXITY_API_KEY` — the `search_web` tool
 
-| Role       | Model / API              | Use case                          |
-|-----------|---------------------------|-----------------------------------|
-| **Router**| Gemini (e.g. gemini-3-flash-preview) | Intent classification, tasks, success criteria |
-| **Synthesis** | Same Gemini (no thinking) | Format final response             |
-| **Screening** | Claude (e.g. claude-sonnet-4-5) | Tool use, filter interpretation   |
-| **Web search** | OpenAI Responses (gpt-4o) | Web search, news summarization    |
+### Model roles
 
-Config (see `config.py` and `llm_factory.py`):
+| Role | Model | Configured by |
+|------|-------|---------------|
+| Router | Gemini (thinking on) | `LLM_ROUTER_MODEL_ID`, `LLM_ROUTER_THINKING_LEVEL` |
+| Synthesis | Same Gemini (thinking off) | `LLM_ROUTER_MODEL_ID` |
+| Screening | Claude | `LLM_ANTHROPIC_MODEL_ID`, `LLM_ANTHROPIC_THINKING_BUDGET` |
+| Web search | OpenAI Responses | `LLM_OPENAI_RESPONSES_MODEL_ID` |
+| `search_web` tool | Perplexity | `LLM_PERPLEXITY_MODEL_ID` |
 
-| Env / concept | Purpose |
-|---------------|--------|
-| `DEFAULT_LLM` | Default provider for `get_default_model()`; router/agents use `AGENT_MODEL_MAP` |
-| `LLM_OPENAI_*` | Model ID, temperature, max_tokens, reasoning_effort |
-| `LLM_OPENAI_RESPONSES_MODEL_ID` | Model for web search agent (e.g. gpt-4o) |
-| `LLM_ANTHROPIC_*` | Model ID, temperature, max_tokens, thinking_budget |
-| `LLM_GOOGLE_*` | Model ID, temperature, max_tokens, thinking_level / thinking_budget |
-| `LLM_ROUTER_*` | Router (and synthesis) model and thinking settings |
+Roles map to builders in `llm_factory._BUILDERS`; agents map to roles via `AGENT_MODEL_MAP`.
 
-## Usage
+## Run
 
-**Gradio UI (recommended):**
+**Web UI:**
 
 ```bash
-uv run python -m stock_screening.ui.screening_ui
+uv run uvicorn stock_screening.api:app --reload
+# http://127.0.0.1:8000
 ```
 
-Then ask e.g. “Find 5 value stocks with low P/E and high ROE” or “Latest news on Reliance Industries”.
+The UI streams responses, shows each tool call with its args and output, and displays the
+token/cost breakdown. "Refresh data" re-runs the ingest pipeline and streams its log.
 
-**CLI (main agent, optional query):**
+**CLI:**
 
 ```bash
-uv run python -m stock_screening.agents.main_agent "Find IT sector stocks with market cap above 50000 crores"
-# Or no args for interactive mode
-uv run python -m stock_screening.agents.main_agent
+uv run python -m stock_screening.agents.main_agent                    # interactive
+uv run python -m stock_screening.agents.main_agent "high ROE IT stocks"
 ```
-
-The UI streams responses, shows tool calls (with args and truncated results), and displays token/cost breakdown (router, agent, synthesis).
 
 ## Extending
 
-- **New agent**: Add a module under `agents/`, define a Pydantic AI `Agent` and output model, then in `main_agent` add a branch in the router output (e.g. new `AgentType`), an `execute` branch, and optionally a streaming runner.
-- **New tool**: Add under `tools/` and register on the screening (or other) agent.
-- **New routing branch**: Extend the router’s structured output (e.g. new agent type), then add the corresponding execution and streaming path in `main_agent`.
+- **New tool**: add a function to `tools/stock_screener.py`, then register it on
+  `screening_agent` — the docstring and `Annotated[..., Field(description=...)]` text *are* the
+  LLM's documentation.
+- **New agent**: add a module under `agents/`, add a value to `AgentType`, map it in
+  `AGENT_MODEL_MAP`, and add a branch in `_run_sub_agent_stream`.
+
+See `.claude/skills/stock-screening/SKILL.md` for the maintenance guide — house style, invariants,
+and how to verify a change without a test suite.
+
+## Data
+
+`data/` is gitignored and distributed as a zip on Drive — fetch it with `scripts/setup_data.py`.
+The screener reads those JSON files directly on every call; there is no database.
+
+`scripts/ingest.py` regenerates `data/companies/*.json` and `data/indices/*.json` from source. The
+UI's "Refresh data" button runs it as a subprocess and streams its log — see `/data/refresh` in
+`api.py`.
+
+To publish a refreshed data set:
+
+```bash
+zip -rq dist/stock-screening-data.zip data/companies data/indices
+```
+
+Upload it to Drive, share as "Anyone with the link", then point `setup_data.py` at that link.
+Paths inside the zip are relative to the project root, so it unpacks as `data/companies/…` and
+`data/indices/…`.

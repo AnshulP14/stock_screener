@@ -1,15 +1,6 @@
-"""Pydantic AI agents for stock analysis."""
+"""Pydantic AI agents for stock analysis. Lazy imports avoid circular deps."""
 
-# Lazy imports to avoid circular dependencies
-__all__ = [
-    # Agent instances
-    "screening_agent",
-    "web_search_agent",
-    # Main agent functions (public API)
-    "route_query",
-    "route_query_stream",
-    "chat_stream",
-]
+__all__ = ["screening_agent", "web_search_agent", "route_query", "route_query_stream"]
 
 
 def __getattr__(name: str):
@@ -19,7 +10,7 @@ def __getattr__(name: str):
     if name == "web_search_agent":
         from stock_screening.agents.web_search_agent import web_search_agent
         return web_search_agent
-    if name in ("route_query", "route_query_stream", "chat_stream"):
-        from stock_screening.agents import main_agent as _main
-        return getattr(_main, name)
+    if name in ("route_query", "route_query_stream"):
+        from stock_screening.agents import main_agent
+        return getattr(main_agent, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

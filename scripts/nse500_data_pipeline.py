@@ -1091,8 +1091,18 @@ def transform_to_json() -> None:
         industry_comparison = compute_company_industry_comparison(company_data, industry_stats)
         company_json["industry_comparison"] = industry_comparison
         
-        # Write to file
+        # Preserve enrichment fields managed by separate scripts
         output_path = COMPANIES_DIR / f"{symbol}.json"
+        if output_path.exists():
+            try:
+                with open(output_path) as _ef:
+                    _existing = json.load(_ef)
+                for _key in ("shareholding", "credit_ratings"):
+                    if _key in _existing:
+                        company_json[_key] = _existing[_key]
+            except Exception:
+                pass
+
         with open(output_path, "w") as f:
             json.dump(company_json, f, indent=2)
         
@@ -1125,7 +1135,21 @@ def transform_to_json() -> None:
         if ic_metrics.get("roe"):
             summary_entry["roe_percentile"] = ic_metrics["roe"].get("percentile")
             summary_entry["roe_vs_industry"] = ic_metrics["roe"].get("vs_median")
-        
+
+        # Add shareholding latest values and trends
+        sh = company_json.get("shareholding", {})
+        promoter_vals = sh.get("promoter", [])
+        fii_vals = sh.get("fii", [])
+        if promoter_vals:
+            summary_entry["promoter_latest"] = promoter_vals[-1]
+        if fii_vals:
+            summary_entry["fii_latest"] = fii_vals[-1]
+        sh_trends = sh.get("trends", {})
+        if sh_trends.get("promoter"):
+            summary_entry["promoter_trend"] = sh_trends["promoter"]
+        if sh_trends.get("fii"):
+            summary_entry["fii_trend"] = sh_trends["fii"]
+
         companies_summary.append(summary_entry)
         
         if (i + 1) % 50 == 0:

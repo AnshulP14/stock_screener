@@ -10,6 +10,7 @@ Modes:
   --quick           Top 50 stocks by market cap (fast, ~5 min)
   --full            All 500 stocks (slow, ~60–90 min)
   --symbols SYM...  Specific tickers only (e.g. --symbols RELIANCE TCS INFY)
+  --sync-universe   Remove delisted stocks, fetch newly added ones
   --rebuild         Rebuild JSON indices from existing CSVs (no network fetch)
   --dry-run         Show what would be fetched, without fetching
 
@@ -18,6 +19,7 @@ Examples:
     python scripts/ingest.py --quick              # Quick top-50 refresh
     python scripts/ingest.py --full               # Full 500-stock refresh
     python scripts/ingest.py --symbols RELIANCE   # Single stock
+    python scripts/ingest.py --sync-universe      # Sync delisted/new stocks
     python scripts/ingest.py --rebuild            # Rebuild index only
     python scripts/ingest.py --dry-run            # Preview what's stale
 """
@@ -53,6 +55,11 @@ def main() -> None:
         nargs="+",
         metavar="SYMBOL",
         help="Refresh specific tickers, e.g. --symbols RELIANCE TCS",
+    )
+    mode_group.add_argument(
+        "--sync-universe",
+        action="store_true",
+        help="Remove delisted stocks from index, fetch newly added ones",
     )
     mode_group.add_argument(
         "--rebuild",
@@ -95,6 +102,8 @@ def main() -> None:
         argv.append("--transform-only")
     elif args.quick:
         argv.append("--quick")
+    elif args.sync_universe:
+        argv.append("--sync-universe")
     # else: incremental (default, no flag needed)
 
     argv.extend(["--days-old", str(args.days_old)])

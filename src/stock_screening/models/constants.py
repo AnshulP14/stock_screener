@@ -1,21 +1,13 @@
-"""Single source of truth for application constants."""
+"""Application constants."""
 
 from typing import Any
-
-# -----------------------------------------------------------------------------
-# Agent Execution Limits
-# -----------------------------------------------------------------------------
 
 MAX_ITERATIONS = 5
 CONVERSATION_CONTEXT_MESSAGES = 10
 
-# Conversation context length limits (chars)
+# Conversation context budgets (chars)
 SYNTHESIS_CONTEXT_MAX_CHARS = 3000
-SUB_AGENT_CONTEXT_MAX_CHARS = 1000  # Summary passed to screening/web_search
-
-# -----------------------------------------------------------------------------
-# Web Search Configuration
-# -----------------------------------------------------------------------------
+SUB_AGENT_CONTEXT_MAX_CHARS = 1000
 
 ALLOWED_DOMAINS = [
     "livemint.com",
