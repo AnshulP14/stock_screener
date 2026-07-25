@@ -22,11 +22,11 @@ env/
 # Logs
 *.log
 
-# Data — lives in a zip on Drive, not in git. Run: python scripts/setup_data.py
-data/
-
-# Build artifacts (e.g. the data zip)
-dist/
+# Data — regenerable from public sources, not in git.
+# Bootstrap: python scripts/data_refresh.py --mode full
+data/*
+!data/SCHEMA.md
+!data/SQL.md
 
 # IDE
 .vscode/

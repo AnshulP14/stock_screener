@@ -1,0 +1,132 @@
+# Stock Screener — data + tools for agent-driven equity research
+
+This repo has no application. You (the agent) are the application. It provides:
+
+1. **`data/`** — fundamental data for NSE500 (India) and S&P500 (US) stocks. Gitignored,
+   regenerable from public sources. If it's missing, offer to bootstrap (see below).
+2. **`data/screener.db`** — DuckDB file over the curated data. Query it with SQL for
+   anything under `data/nse/` or `data/snp/` — see `data/SQL.md`. This is the only
+   query surface; there's no CLI.
+3. **`scripts/`** — modular pipeline: `core/` (shared utilities) + `markets/` (NSE/S&P500 entry points) + thin CLI wrappers.
+4. **Skills** — `screen-stocks` (how to query + strategy recipes), `refresh-data` (when/how to update).
+
+## Data map
+
+Two tiers: curated (small, agent-facing) and raw (large, drill-down only).
+
+```
+data/
+├── nse/                            # curated NSE500 (India)
+│   ├── companies/{SYMBOL}.json     # per-company profile: snapshot, trends,
+│   │                                #   shareholding, credit ratings, industry comparison
+│   └── indices/
+│       ├── screening_summary.json  # all NSE500 companies, flat screening metrics
+│       └── industry_stats.json     # per-industry percentile bands
+├── snp/                            # curated S&P500 (US), same shapes as nse/
+│   ├── companies/{SYMBOL}.json     # (institutional_ownership instead of
+│   │                                #   shareholding/credit_ratings; GICS fields)
+│   └── indices/
+└── raw/                            # deep-dive tier — never Read whole, always extract
+    ├── nse/
+    │   ├── current_metrics.csv     # raw fetch output (inputs to the curated JSONs)
+    │   ├── historical_annual.csv
+    │   ├── quarterly_raw.json      # full yfinance payloads per symbol
+    │   ├── annual_reports/         # scraped Screener.in PDFs
+    │   └── failed_tickers.txt
+    └── snp/
+        ├── edgar_cache/{SYMBOL}.json  # full SEC XBRL companyfacts (~500 tags,
+        │                               #   full filing history) — 4MB+ each, extract don't Read
+        └── sp500_universe.json
+```
+
+**Query curated data with SQL against `data/screener.db`** (see `data/SQL.md`) — six
+tables (`nse`/`snp` flat summaries, `nse_companies`/`snp_companies` full nested
+profiles, `nse_industry_stats`/`snp_industry_stats` percentile bands). **Not rebuilt
+automatically by the pipeline** — after any fetch/transform run, rebuild it explicitly
+with `python scripts/build_db.py --market all` (cheap, JSON → DB only, no re-fetch).
+This covers everything under `data/nse/` and `data/snp/`,
+from simple screens to deep single-company drill-down — no jq needed for curated data.
+Only reach into `data/raw/` for questions the curated tier can't answer (e.g. a
+specific GAAP tag's full quarterly history) — use jq/python there, don't Read a raw
+file whole. Full field-by-field shapes for every file (including the NSE↔S&P500 schema
+deltas) are in `data/SCHEMA.md`.
+
+## Script package structure
+
+```
+scripts/
+├── core/
+│   ├── config.py        # Paths, URLs, rate limits, staleness thresholds
+│   ├── fetch.py         # NSE/S&P500 tickers, yfinance fundamentals, SEC EDGAR + cache
+│   ├── transform.py     # Snapshot building, trends, insights, company JSON assembly
+│   ├── enrich.py        # Screener.in shareholding & credit ratings parsing + batch
+│   └── index.py         # Screening summary, industry stats, percentiles, DB rebuild
+├── markets/
+│   ├── __init__.py      # Package marker
+│   ├── nse.py           # NSE500 pipeline: fetch → transform → enrich → indices
+│   └── us.py            # S&P500 pipeline: fetch → transform → EDGAR → indices
+├── cli.py               # Unified CLI: `python scripts/cli.py --market nse --mode full`
+├── data_refresh.py      # Documented entry point → cli.main() (same interface)
+├── build_db.py          # Rebuild screener.db from curated JSON
+├── query.py             # DuckDB SQL query utility
+├── screener_in.py       # Shareholding & credit ratings scraper CLI
+└── fetch_annual_reports.py  # Annual report PDF downloader
+```
+
+**Units:** ratios and margins are decimals (0.15 = 15%); shareholding percentages are
+whole numbers (52.3 = 52.3%). Market cap / revenue are absolute INR (`*_inr`) or USD
+(`*_usd`). NSE fiscal years end March 31; US fiscal years vary by company.
+
+**Freshness:** check `data/manifest.json` first — one file, per-market `generated_at`,
+`total_companies`, and enrichment coverage (e.g. `shareholding_coverage`,
+`edgar_coverage`), written by each pipeline run. Each market also carries a `db`
+sub-key (`rebuilt_at`, `tables`) written only by `scripts/build_db.py` — compare
+`db.rebuilt_at` against the market's `generated_at` to tell whether `screener.db` is
+behind the curated JSON (see the note above: the DB rebuild is a separate manual step).
+Falls back to `generated_at` in each market's `screening_summary.json` if the manifest
+predates this change. NSE annual results land ~60 days after Mar 31; quarterly results
+~45 days after quarter end. If data looks stale, offer to run an incremental update
+(see the `refresh-data` skill).
+
+## Quick reference
+
+```sql
+-- SQL against data/screener.db (see data/SQL.md)
+SELECT symbol, sector, trailing_pe, roe FROM nse
+WHERE trailing_pe < 15 AND roe > 0.15 ORDER BY roe DESC LIMIT 20;
+```
+
+```bash
+python scripts/build_db.py --market all                 # rebuild data/screener.db from JSON, no re-fetch
+python scripts/data_refresh.py                          # Both markets, incremental
+python scripts/data_refresh.py --market nse --mode full # NSE full bootstrap (~60-90 min)
+python scripts/data_refresh.py --market us --mode full  # S&P500 full bootstrap
+python scripts/data_refresh.py --market nse --symbols RELIANCE TCS  # Specific stocks
+python scripts/data_refresh.py --market us --dry-run           # Preview only
+```
+
+## Fresh clone (no data/)
+
+Bootstrap: `python scripts/data_refresh.py --mode full` (both markets) or pick one
+with `--market nse/us`. The NSE500 quick start —
+`python scripts/data_refresh.py --market nse --mode quick`
+(top 50 stocks, ~5 min) is a fast partial start. Shareholding/credit-rating enrichment
+scrapes Screener.in and may partially fail — the core dataset is still usable; a later
+incremental run fills gaps. Run `python scripts/build_db.py --market all` afterward to
+build `data/screener.db` — it is not rebuilt automatically as part of the pipeline run.
+
+## Web research
+
+For news/qualitative context use WebSearch/WebFetch. Prefer these sources — India:
+livemint.com, business-standard.com, economictimes.indiatimes.com, moneycontrol.com,
+thehindubusinessline.com, financialexpress.com, nseindia.com, bseindia.com, sebi.gov.in.
+US/global: reuters.com, bloomberg.com, sec.gov, wsj.com. Pass them as `allowed_domains`
+for news searches; keep citation links in answers.
+
+## House rules
+
+- Analysis output goes to the conversation (or files the user asks for) — don't add
+  report generators, notebooks, or app code to the repo.
+- Never `git add data/`.
+- All shared logic lives in `scripts/core/`; market-specific orchestration in `scripts/markets/`.
+  Legacy wrapper scripts delegate to the new package — don't modify them directly.
