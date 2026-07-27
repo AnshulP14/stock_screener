@@ -2,7 +2,7 @@
 
 import json
 import time
-from datetime import datetime, date
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -25,23 +25,14 @@ from screener import (
     write_failure_log,
 )
 from screener.fetch import _build_cik_map
+from screener.freshness import AgeDays, stale_symbols
+
+_AGE_POLICY = AgeDays(field=("current_snapshot", "as_of"), days=7)
 
 
 def _is_stale(symbol: str) -> bool:
     """Check if a company's data is stale (missing or > 7 days old)."""
-    path = COMPANIES_DIR / f"{symbol}.json"
-    if not path.exists():
-        return True
-    try:
-        with open(path) as f:
-            company = json.load(f)
-        as_of = company.get("current_snapshot", {}).get("as_of", "")
-        if not as_of:
-            return True
-        days = (date.today() - date.fromisoformat(as_of)).days
-        return days > 7
-    except Exception:
-        return True
+    return symbol in stale_symbols(COMPANIES_DIR, _AGE_POLICY, symbols=[symbol])
 
 
 def run(

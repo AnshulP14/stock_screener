@@ -11,7 +11,11 @@ import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-from .config import COMPANIES_DIR, SCREENER_USER_AGENT, RATE_LIMIT_DELAY
+from .config import COMPANIES_DIR, SCREENER_USER_AGENT, RATE_LIMIT_DELAY, CREDIT_RATINGS_STALE_DAYS
+from .freshness import AgeDays, Market, QuarterLag, is_stale
+
+_QUARTER_POLICY = QuarterLag(field=("shareholding", "quarters", -1), market=Market.NSE)
+_RATINGS_POLICY = AgeDays(field=("credit_ratings", "updated_at"), days=CREDIT_RATINGS_STALE_DAYS)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -47,19 +51,6 @@ def _load_company(symbol: str) -> dict:
 def _save_company(symbol: str, data: dict):
     with open(COMPANIES_DIR / f"{symbol}.json", "w") as f:
         json.dump(data, f, indent=2)
-
-
-def _expected_latest_quarter() -> str:
-    """Latest quarter whose data should be available (45-day lag)."""
-    today = date.today()
-    ends = [
-        date(today.year - 1, 9, 30), date(today.year - 1, 12, 31),
-        date(today.year, 3, 31),      date(today.year, 6, 30),
-        date(today.year, 9, 30),      date(today.year, 12, 31),
-    ]
-    q = max(e for e in ends if (today - e).days >= 45)
-    month_name = {3: "Mar", 6: "Jun", 9: "Sep", 12: "Dec"}[q.month]
-    return f"{month_name} {q.year}"
 
 
 # ── Shareholding ─────────────────────────────────────────────────────
@@ -187,20 +178,11 @@ def _parse_date_text(text: str) -> str:
 # ── Staleness checks ───────────────────────────────────────────────
 
 def _is_shareholding_stale(company: dict) -> bool:
-    # `shareholding` is explicitly `null` (not a missing key) on a fresh fetch,
-    # so `.get(k, {})` alone won't fall back to {} — use `or {}` too.
-    q = (company.get("shareholding") or {}).get("quarters", [])
-    return not q or q[-1] != _expected_latest_quarter()
+    return is_stale(company, _QUARTER_POLICY)
 
 
 def _is_ratings_stale(company: dict) -> bool:
-    updated = (company.get("credit_ratings") or {}).get("updated_at")
-    if not updated:
-        return True
-    try:
-        return (date.today() - date.fromisoformat(updated)).days >= 45
-    except Exception:
-        return True
+    return is_stale(company, _RATINGS_POLICY)
 
 
 # ── Batch processing ───────────────────────────────────────────────

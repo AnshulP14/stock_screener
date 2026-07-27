@@ -56,5 +56,4 @@ NSE_FAILED_TICKERS = RAW_DIR / "nse" / "failed_tickers.txt"
 SNP_FAILED_TICKERS = RAW_DIR / "snp" / "failed_tickers.txt"
 
 # Staleness thresholds
-SHAREHOLDING_STALE_DAYS = 30
 CREDIT_RATINGS_STALE_DAYS = 45

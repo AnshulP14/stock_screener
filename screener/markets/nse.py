@@ -2,7 +2,7 @@
 
 import json
 import time
-from datetime import datetime, date
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -25,43 +25,14 @@ from screener import (
     run_fetch_pipeline,
     write_failure_log,
 )
+from screener.freshness import AgeDays, Market, QuarterLag, stale_symbols
+
+_QUARTER_POLICY = QuarterLag(field=("shareholding", "quarters", -1), market=Market.NSE)
 
 
 def _fiscal_year(d: datetime) -> int:
     """Indian FY: Apr 1 - Mar 31. FY ending Mar 2024 = FY2024."""
     return d.year + 1 if d.month >= 4 else d.year
-
-
-def _expected_latest_quarter() -> str:
-    """Latest quarter whose data should be available (45-day lag after quarter end)."""
-    today = date.today()
-    ends = [
-        date(today.year - 1, 9, 30), date(today.year - 1, 12, 31),
-        date(today.year, 3, 31), date(today.year, 6, 30),
-        date(today.year, 9, 30), date(today.year, 12, 31),
-    ]
-    q = max(e for e in ends if (today - e).days >= 45)
-    month_name = {3: "Mar", 6: "Jun", 9: "Sep", 12: "Dec"}[q.month]
-    return f"{month_name} {q.year}"
-
-
-def _get_stale_symbols_incomplete(all_symbols):
-    """Get symbols whose data is missing shareholding or credit ratings."""
-    stale = []
-    for sym in all_symbols:
-        path = COMPANIES_DIR / f"{sym}.json"
-        if not path.exists():
-            stale.append(sym)
-            continue
-        try:
-            with open(path) as f:
-                company = json.load(f)
-            sh = company.get("shareholding", {})
-            if not sh.get("quarters") or sh.get("quarters")[-1] != _expected_latest_quarter():
-                stale.append(sym)
-        except Exception:
-            stale.append(sym)
-    return stale
 
 
 def _top_symbols_by_mcap(n=50):
@@ -151,20 +122,7 @@ def run(
                 path.unlink()
                 print(f"    Deleted {path.name}")
 
-        stale = []
-        for sym in sorted(current_symbols):
-            path = COMPANIES_DIR / f"{sym}.json"
-            if not path.exists():
-                stale.append(sym)
-                continue
-            try:
-                with open(path) as f:
-                    company = json.load(f)
-                q = company.get("shareholding", {}).get("quarters", [])
-                if not q or q[-1] != _expected_latest_quarter():
-                    stale.append(sym)
-            except Exception:
-                stale.append(sym)
+        stale = stale_symbols(COMPANIES_DIR, _QUARTER_POLICY, symbols=sorted(current_symbols))
 
         print(f"  Removed from index: {len(removed)}")
         print(f"  Stale/missing: {len(stale)}")
@@ -212,7 +170,10 @@ def run(
                     tickers, nse_metadata = fetch_nse500_tickers()
                     all_symbols = [t.replace(".NS", "") for t in tickers]
                 print(f"  {len(all_symbols)} companies in database")
-                symbols = _get_stale_symbols_incomplete(all_symbols)
+                age_policy = AgeDays(field=("current_snapshot", "as_of"), days=days_old)
+                stale_quarter = stale_symbols(COMPANIES_DIR, _QUARTER_POLICY, symbols=all_symbols)
+                stale_age = stale_symbols(COMPANIES_DIR, age_policy, symbols=all_symbols)
+                symbols = sorted(set(stale_quarter) | set(stale_age))
                 print(f"  {len(symbols)} stale, {len(all_symbols) - len(symbols)} up-to-date")
 
         if not symbols:
