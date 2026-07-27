@@ -15,8 +15,19 @@ never Read one of these files whole (they run 4MB+ each).
 
 ## Query idioms — batch, don't loop
 
-One query can replace what would otherwise be several tool calls. Use the wrapper
-`python3 scripts/query.py "..."` or the Python one-liner pattern below.
+One query replaces several tool calls — use `python3 scripts/query.py "..."`, or with
+zero extra deps:
+
+```bash
+python3 -c "
+import duckdb
+con = duckdb.connect('data/screener.db')
+for row in con.execute('SELECT * FROM nse LIMIT 5').fetchall():
+    print(row)
+"
+```
+
+Show column names: `python3 -c "import duckdb; [print(c[0]) for c in duckdb.connect('data/screener.db').execute('DESCRIBE nse').fetchall()]"`
 
 **Multi-symbol comparison in one query:**
 ```sql
@@ -76,28 +87,6 @@ The nested tables (`nse_companies`, `snp_companies`) use DuckDB **structs** and 
 `json_extract_path_text(sector, '')` to filter by sector name.
 Run `DESCRIBE nse_companies` to see the full column layout.
 
-## Querying from the shell
-
-**Wrapper script (recommended):**
-```bash
-python3 scripts/query.py "SELECT * FROM nse LIMIT 5"
-```
-
-**Python one-liner (zero extra deps):**
-```bash
-python3 -c "
-import duckdb
-con = duckdb.connect('data/screener.db')
-for row in con.execute('SELECT * FROM nse LIMIT 5').fetchall():
-    print(row)
-"
-```
-
-**Show column names:**
-```bash
-python3 -c "import duckdb; [print(c[0]) for c in duckdb.connect('data/screener.db').execute('DESCRIBE nse').fetchall()]"
-```
-
 ## Tables
 
 | Table | Shape |
@@ -106,12 +95,17 @@ python3 -c "import duckdb; [print(c[0]) for c in duckdb.connect('data/screener.d
 | `nse_companies`, `snp_companies` | Nested, full profile — historical trends, shareholding, credit ratings |
 | `nse_industry_stats`, `snp_industry_stats` | One row per industry — percentile bands |
 
-## Units & market notes
+## Units & market differences
 
 Ratios/margins are decimals (`roe = 0.15` → 15%); shareholding percentages are whole
-numbers (`promoter_latest = 52.3` → 52.3%). NSE uses `market_cap_inr`, S&P uses
-`market_cap_usd` — don't compare raw values across markets. NSE fiscal years end
-March 31; US fiscal years vary.
+numbers (`promoter_latest = 52.3` → 52.3%). NSE fiscal years end March 31; US fiscal
+years vary.
+
+NSE uses `market_cap_inr` + shareholding (promoter/FII/DII); S&P uses `market_cap_usd`
++ institutional/insider %. S&P has `beta`; NSE has `net_income_cagr_3yr` and
+`ev_to_ebitda` percentiles — don't compare raw market-cap/size values across markets.
+All core screening columns (`trailing_pe`, `roe`, `profit_margin`, `price_to_book`,
+`revenue_cagr_3yr`, `eps_cagr_3yr`) are identical across both markets.
 
 ## Strategy recipes
 
@@ -136,13 +130,6 @@ March 31; US fiscal years vary.
 - Zero revenue in historical trend arrays means "not reported", not zero sales.
 - NSE shareholding signals: rising promoter + rising FII holdings are generally positive;
   falling promoter holding warrants a news check (pledging, stake sales).
-
-## Cross-checking & market differences
-
-- NSE tables include shareholding (promoter/FII/DII); S&P uses institutional/insider %.
-- S&P has `beta`; NSE has `net_income_cagr_3yr` and `ev_to_ebitda` percentiles.
-- All core screening columns (`trailing_pe`, `roe`, `profit_margin`, `price_to_book`,
-  `revenue_cagr_3yr`, `eps_cagr_3yr`) are identical across both markets.
 
 For anything price-sensitive or news-dependent (recent results, management changes,
 regulatory actions), supplement local data with WebSearch using the preferred domains in

@@ -15,10 +15,13 @@ still missing or stale.
 # Both markets, incremental (default)
 python scripts/data_refresh.py
 
+# Both markets, bootstrap from empty (~60-120 min total — run in background)
+python scripts/data_refresh.py --mode full
+
 # Single market
-python scripts/data_refresh.py --market nse --mode full      # NSE bootstrap
-python scripts/data_refresh.py --market us --mode full       # S&P500 bootstrap
-python scripts/data_refresh.py --market nse --mode quick     # NSE top-50 (~5 min)
+python scripts/data_refresh.py --market nse --mode full      # NSE bootstrap, ~60-90 min
+python scripts/data_refresh.py --market us --mode full       # S&P500 bootstrap, varies (EDGAR throttled)
+python scripts/data_refresh.py --market nse --mode quick     # NSE top-50, ~5 min
 python scripts/data_refresh.py --market nse --mode sync-universe  # NSE index rebalance
 python scripts/data_refresh.py --market us --mode rebuild    # S&P500 indices only
 python scripts/data_refresh.py --market nse --symbols RELIANCE TCS  # Specific stocks
@@ -60,17 +63,3 @@ Cheap — JSON → DB only, no re-fetch.
 - **S&P500 requires `$SEC_EDGAR_CONTACT` env var** (real email for SEC EDGAR User-Agent).
   If the script exits with an error about this, set it before running:
   `export SEC_EDGAR_CONTACT='sp500-screener-bot user@example.com'`
-
-## Bootstrap from empty
-
-```bash
-# Both markets
-python scripts/data_refresh.py --mode full                   # background, ~60-120 min total
-
-# Or pick one market at a time
-python scripts/data_refresh.py --market nse --mode full      # ~60-90 min
-python scripts/data_refresh.py --market us --mode full       # varies (EDGAR throttled)
-
-# Quick partial start
-python scripts/data_refresh.py --market nse --mode quick     # ~5 min (top 50 NSE stocks)
-```

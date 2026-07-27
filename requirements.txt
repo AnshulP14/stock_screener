@@ -1,9 +1,0 @@
-# Core query dependency
-duckdb>=1.0
-
-# Dataframe support (for fetchdf(), optional but convenient)
-pandas>=2.0
-
-# Data pipeline dependencies
-yfinance>=0.2
-requests>=2.28
