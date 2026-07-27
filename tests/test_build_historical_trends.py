@@ -61,3 +61,18 @@ def test_roe_avg_3yr_is_the_actual_roe_average_not_net_income_cagr():
     # Net-income CAGR over the same years is (30/10)**(1/2)-1 ~= 0.732 -- a
     # very different number, so this pins the actual metric, not just "a value".
     assert trends["roe"]["avg_3yr"] == pytest.approx(0.20)
+
+
+def test_roe_aligns_net_income_and_equity_by_fiscal_year_not_position():
+    # Income covers all 3 years; balance sheet only has FY2023-2024 (a real
+    # yfinance pattern near IPOs/restatements). Positionally zipping
+    # ni_vals[0:2] against eq_vals[0:1] would pair FY2022 net income with
+    # FY2023 equity -- this pins that FY2022's ROE is None, not a shifted value.
+    data = _fixture_data()
+    data["annual_balance"] = pd.DataFrame({
+        FY_ENDS[1]: {"Total Debt": 40.0, "Stockholders Equity": 200.0},
+        FY_ENDS[2]: {"Total Debt": 160.0, "Stockholders Equity": 200.0},
+    })
+    trends = build_historical_trends(data)
+    # FY2022 net income 10.0, no equity data -> None, not 10/200.
+    assert trends["roe"]["values"] == [None, pytest.approx(20 / 200), pytest.approx(30 / 200)]

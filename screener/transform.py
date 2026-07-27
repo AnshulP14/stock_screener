@@ -8,6 +8,7 @@ from typing import Any
 
 import pandas as pd
 
+from .statements import AnnualStatements
 from .trends import (
     average_roe,
     cagr,
@@ -119,31 +120,6 @@ def build_current_snapshot(data: dict[str, Any], nse_metadata: dict[str, dict] |
     }
 
 
-def _process_annual_statement(df: pd.DataFrame) -> pd.DataFrame:
-    """Transpose annual statement, extract fiscal years."""
-    if df is None or df.empty:
-        return pd.DataFrame()
-    try:
-        transposed = df.T.copy()
-        transposed.index = pd.to_datetime(transposed.index)
-        transposed["fiscal_year"] = transposed.index.to_series().apply(lambda t: t.year + 1 if t.month >= 4 else t.year)
-        return transposed.groupby("fiscal_year").last().T
-    except Exception:
-        return pd.DataFrame()
-
-
-def _row_values(df: pd.DataFrame, label: str) -> list[float | None]:
-    """Extract a named line-item row's per-column (per-fiscal-year) values, in
-    column order. `df[df.index == label]` is a 1-row-wide DataFrame — iterating
-    it directly yields column labels, not the row, so index into it explicitly."""
-    if label not in df.index:
-        return [None] * len(df.columns)
-    row = df.loc[label]
-    if isinstance(row, pd.DataFrame):
-        row = row.iloc[0]
-    return [_safe_float(v) for v in row]
-
-
 # ── Trend computation ───────────────────────────────────────────────
 
 def build_historical_trends(data: dict[str, Any]) -> dict[str, Any]:
@@ -151,28 +127,29 @@ def build_historical_trends(data: dict[str, Any]) -> dict[str, Any]:
     info = data.get("info", {})
     symbol = data["symbol"].replace(".NS", "")
 
-    # Build annual dataframes
-    annual_income = _process_annual_statement(data.get("annual_income", pd.DataFrame()))
-    annual_balance = _process_annual_statement(data.get("annual_balance", pd.DataFrame()))
-    annual_cashflow = _process_annual_statement(data.get("annual_cashflow", pd.DataFrame()))
+    statements = AnnualStatements.from_yfinance(
+        data.get("annual_income", pd.DataFrame()),
+        data.get("annual_balance", pd.DataFrame()),
+        data.get("annual_cashflow", pd.DataFrame()),
+    )
 
     # Inherit sector/industry from info
     sector = info.get("sector", "")
     industry = info.get("industry", "")
 
     # Yearly stats
-    years = sorted(annual_income.columns)
+    years = statements.years
     if not years:
         return {"source": "yfinance", "years_available": [], "error": "no_annual_data"}
 
-    rev_vals = _row_values(annual_income, "Total Revenue")
-    ni_vals = _row_values(annual_income, "Net Income")
-    eps_vals = _row_values(annual_income, "Diluted EPS")
-    gross_vals = _row_values(annual_income, "Gross Profit")
-    op_vals = _row_values(annual_income, "Operating Income")
-    cf_vals = _row_values(annual_cashflow, "Free Cash Flow")
-    debt_vals = _row_values(annual_balance, "Total Debt")
-    eq_vals = _row_values(annual_balance, "Stockholders Equity")
+    rev_vals = statements.revenue
+    ni_vals = statements.net_income
+    eps_vals = statements.diluted_eps
+    gross_vals = statements.gross_profit
+    op_vals = statements.operating_income
+    cf_vals = statements.free_cash_flow
+    debt_vals = statements.total_debt
+    eq_vals = statements.stockholders_equity
 
     rev = [v for v in rev_vals if _safe_float(v)]
     ni = [v for v in ni_vals if _safe_float(v)]
