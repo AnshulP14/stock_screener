@@ -9,15 +9,10 @@ Usage:
     python scripts/screener_in.py credit_ratings --stale
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
 import argparse
+import sys
 
-from core.enrich import process_symbols, get_stale_symbols
-
+from screener.enrich import process_symbols, get_stale_symbols
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Fetch shareholding patterns and credit ratings from Screener.in")

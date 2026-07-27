@@ -8,10 +8,7 @@ Usage:
     python fetch_annual_reports.py --all --limit 10     # All NSE500 (limited)
 """
 
-import sys
 from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import argparse
 import json
@@ -23,7 +20,7 @@ import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
 
-from core.config import RAW_DIR, INDICES_DIR, SCREENER_BASE_URL, SCREENER_USER_AGENT, RATE_LIMIT_DELAY
+from screener.config import RAW_DIR, INDICES_DIR, SCREENER_BASE_URL, SCREENER_USER_AGENT, RATE_LIMIT_DELAY
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)

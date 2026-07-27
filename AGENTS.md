@@ -7,7 +7,8 @@ This repo has no application. You (the agent) are the application. It provides:
 2. **`data/screener.db`** — DuckDB file over the curated data. Query it with SQL for
    anything under `data/nse/` or `data/snp/` — see `data/SQL.md`. This is the only
    query surface; there's no CLI.
-3. **`scripts/`** — modular pipeline: `core/` (shared utilities) + `markets/` (NSE/S&P500 entry points) + thin CLI wrappers.
+3. **`screener/`** — the pipeline package (shared utilities + NSE/S&P500 orchestration).
+   **`scripts/`** — thin CLI wrappers over it; commands below are unaffected by that split.
 4. **Skills** — `screen-stocks` (how to query + strategy recipes), `refresh-data` (when/how to update).
 
 ## Data map
@@ -51,27 +52,39 @@ specific GAAP tag's full quarterly history) — use jq/python there, don't Read 
 file whole. Full field-by-field shapes for every file (including the NSE↔S&P500 schema
 deltas) are in `data/SCHEMA.md`.
 
-## Script package structure
+## Package structure
+
+`screener/` is a real installable package (`uv sync` installs it editable) — no
+`sys.path` hacks needed to import it, including from tests. `scripts/*.py` are thin
+CLI entry points over it; every command in this file targets `scripts/`, and that
+interface doesn't change when the package internals do.
 
 ```
+screener/
+├── config.py            # Paths, URLs, rate limits, staleness thresholds
+├── fetch.py              # NSE/S&P500 tickers, yfinance fundamentals, SEC EDGAR + cache
+├── transform.py          # Snapshot building, trends, insights, company JSON assembly
+├── enrich.py             # Screener.in shareholding & credit ratings parsing + batch
+├── index.py              # Screening summary, industry stats, percentiles, DB rebuild
+├── runner.py             # Concurrent fetch→save engine shared by both market pipelines
+├── cli.py                # Unified CLI implementation
+├── db.py                 # screener.db rebuild logic
+├── query.py              # DuckDB SQL query logic
+└── markets/
+    ├── nse.py            # NSE500 pipeline: fetch → transform → enrich → indices
+    └── us.py             # S&P500 pipeline: fetch → transform → EDGAR → indices
+
 scripts/
-├── core/
-│   ├── config.py        # Paths, URLs, rate limits, staleness thresholds
-│   ├── fetch.py         # NSE/S&P500 tickers, yfinance fundamentals, SEC EDGAR + cache
-│   ├── transform.py     # Snapshot building, trends, insights, company JSON assembly
-│   ├── enrich.py        # Screener.in shareholding & credit ratings parsing + batch
-│   └── index.py         # Screening summary, industry stats, percentiles, DB rebuild
-├── markets/
-│   ├── __init__.py      # Package marker
-│   ├── nse.py           # NSE500 pipeline: fetch → transform → enrich → indices
-│   └── us.py            # S&P500 pipeline: fetch → transform → EDGAR → indices
-├── cli.py               # Unified CLI: `python scripts/cli.py --market nse --mode full`
-├── data_refresh.py      # Documented entry point → cli.main() (same interface)
-├── build_db.py          # Rebuild screener.db from curated JSON
-├── query.py             # DuckDB SQL query utility
-├── screener_in.py       # Shareholding & credit ratings scraper CLI
-└── fetch_annual_reports.py  # Annual report PDF downloader
+├── cli.py                # → screener.cli.main()   `python scripts/cli.py --market nse --mode full`
+├── data_refresh.py       # → screener.cli.main() (documented entry point, same interface)
+├── build_db.py           # → screener.db.rebuild()
+├── query.py              # → screener.query.query()
+├── screener_in.py        # → screener.enrich (shareholding & credit ratings scraper CLI)
+└── fetch_annual_reports.py  # standalone annual report PDF downloader
 ```
+
+`tests/` covers the package with pytest (`uv run pytest`) — focused on pure seams
+(classifiers, staleness rules, DB rebuild helpers), not network calls.
 
 **Units:** ratios and margins are decimals (0.15 = 15%); shareholding percentages are
 whole numbers (52.3 = 52.3%). Market cap / revenue are absolute INR (`*_inr`) or USD
@@ -128,5 +141,5 @@ for news searches; keep citation links in answers.
 - Analysis output goes to the conversation (or files the user asks for) — don't add
   report generators, notebooks, or app code to the repo.
 - Never `git add data/`.
-- All shared logic lives in `scripts/core/`; market-specific orchestration in `scripts/markets/`.
-  Legacy wrapper scripts delegate to the new package — don't modify them directly.
+- All shared logic lives in `screener/`; market-specific orchestration in `screener/markets/`.
+  `scripts/*.py` delegate to it — don't put logic back into the wrappers.

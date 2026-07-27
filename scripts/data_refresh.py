@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-Unified data refresh — thin wrapper over cli.py.
-
-Preserves original CLI interface for backward compatibility.
+Unified data refresh — thin wrapper over screener.cli.
 
 Usage:
     python scripts/data_refresh.py
@@ -12,12 +10,7 @@ Usage:
     python scripts/data_refresh.py --market us --dry-run
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from cli import main
+from screener.cli import main
 
 if __name__ == "__main__":
     main()

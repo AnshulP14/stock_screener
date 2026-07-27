@@ -17,15 +17,17 @@ local DuckDB file (`data/screener.db`) with SQL and uses web search to do the re
 │   ├── screener.db      # DuckDB file over the curated data — see data/SQL.md
 │   ├── SQL.md           # table reference + example queries
 │   └── SCHEMA.md        # field-by-field JSON shapes
-├── scripts/             # data fetchers (yfinance, NSE archives, SEC EDGAR, Screener.in)
-│   ├── core/                 # shared pipeline: config, fetch, transform, enrich, index
-│   ├── markets/               # per-market orchestration: nse.py, us.py
+├── screener/            # the pipeline package: config, fetch, transform, enrich, index,
+│   │                    #   markets/ (nse.py, us.py), cli.py, db.py, query.py
+├── scripts/             # thin CLI wrappers over screener/ (yfinance, NSE archives,
+│   │                    #   SEC EDGAR, Screener.in)
 │   ├── cli.py                 # unified entry: --market nse/us/all --mode full|incremental
 │   ├── build_db.py            # rebuild data/screener.db from curated JSON, no re-fetch
 │   ├── query.py                # run SQL against data/screener.db
 │   ├── data_refresh.py         # documented entry point (same interface as cli.py)
 │   ├── screener_in.py         # Screener.in scraper (shareholding + credit ratings)
 │   └── fetch_annual_reports.py # annual report PDFs
+├── tests/               # pytest — pure seams only, no network calls
 └── .agents/skills/      # screen-stocks, refresh-data (canonical; .claude/skills/ symlinks here)
 ```
 
@@ -33,6 +35,7 @@ local DuckDB file (`data/screener.db`) with SQL and uses web search to do the re
 
 ```bash
 uv sync
+uv run pytest                                                # run the test suite
 
 # Build the data set (public sources; no keys needed)
 python scripts/data_refresh.py --market nse --mode full     # NSE500, ~60-90 min

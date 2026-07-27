@@ -30,6 +30,7 @@ from .transform import (
 from .index import (
     build_indices,
     rebuild_market_db,
+    drop_market_tables,
     update_manifest,
 )
 from .enrich import (

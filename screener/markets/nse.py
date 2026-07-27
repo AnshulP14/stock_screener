@@ -1,7 +1,4 @@
-"""NSE500 data update — unified pipeline entry point.
-
-Replaces the old update_data.py script. All logic imported from core/.
-"""
+"""NSE500 data update — unified pipeline entry point."""
 
 import json
 import time
@@ -10,10 +7,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from core.config import (
+from screener.config import (
     COMPANIES_DIR, INDICES_DIR, RAW_DIR, ROOT, MAX_WORKERS, NSE_FAILED_TICKERS,
+    RATE_LIMIT_DELAY,
 )
-from core import (
+from screener import (
     fetch_nse500_tickers,
     fetch_ticker_data,
     build_current_snapshot,
@@ -47,7 +45,7 @@ def _expected_latest_quarter() -> str:
     return f"{month_name} {q.year}"
 
 
-def _get_stale_symbols_incomplete(all_symbols, nse_metadata):
+def _get_stale_symbols_incomplete(all_symbols):
     """Get symbols whose data is missing shareholding or credit ratings."""
     stale = []
     for sym in all_symbols:
@@ -214,7 +212,7 @@ def run(
                     tickers, nse_metadata = fetch_nse500_tickers()
                     all_symbols = [t.replace(".NS", "") for t in tickers]
                 print(f"  {len(all_symbols)} companies in database")
-                symbols = _get_stale_symbols_incomplete(all_symbols, nse_metadata)
+                symbols = _get_stale_symbols_incomplete(all_symbols)
                 print(f"  {len(symbols)} stale, {len(all_symbols) - len(symbols)} up-to-date")
 
         if not symbols:

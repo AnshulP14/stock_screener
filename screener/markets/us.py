@@ -1,7 +1,4 @@
-"""S&P 500 data update — unified pipeline entry point.
-
-Replaces the old sp500_data_pipeline.py script. All logic imported from core/.
-"""
+"""S&P 500 data update — unified pipeline entry point."""
 
 import json
 import time
@@ -10,11 +7,11 @@ from pathlib import Path
 
 import pandas as pd
 
-from core.config import (
+from screener.config import (
     SNP_COMPANIES_DIR as COMPANIES_DIR, SNP_INDICES_DIR as INDICES_DIR,
     RAW_DIR, ROOT, MAX_WORKERS, EDGAR_CACHE_DIR, SNP_FAILED_TICKERS,
 )
-from core import (
+from screener import (
     fetch_sp500_universe,
     fetch_edgar_facts,
     fetch_ticker_data,
@@ -27,18 +24,7 @@ from core import (
     run_fetch_pipeline,
     write_failure_log,
 )
-
-
-def _build_cik_map() -> dict[str, int]:
-    """Fetch fresh CIK→ticker map from SEC."""
-    from core.fetch import _edgar_ua
-    import requests
-    from core.config import EDGAR_TICKERS
-
-    resp = requests.get(EDGAR_TICKERS, headers={"User-Agent": _edgar_ua()}, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    return {entry["ticker"].upper(): entry["cik_str"] for entry in data.values()}
+from screener.fetch import _build_cik_map
 
 
 def _is_stale(symbol: str) -> bool:

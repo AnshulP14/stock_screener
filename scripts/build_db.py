@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Rebuild data/screener.db from curated JSON files.
+Rebuild data/screener.db from curated JSON files — thin wrapper over screener.db.
 
 Usage:
     python scripts/build_db.py
@@ -9,55 +9,11 @@ Usage:
     python scripts/build_db.py --market all
 """
 
-import sys
-from pathlib import Path
+import argparse
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-
-from core.index import rebuild_market_db
-from core.config import (
-    COMPANIES_DIR, INDICES_DIR,
-    SNP_COMPANIES_DIR, SNP_INDICES_DIR,
-)
-
-
-def rebuild(market: str = "all") -> dict:
-    """
-    Rebuild screener.db for one or both markets.
-
-    Args:
-        market: "nse", "snp", or "all"
-
-    Returns:
-        dict with table names and row counts
-    """
-    results = {}
-
-    if market in ("nse", "all"):
-        if not INDICES_DIR.exists():
-            print("  No NSE screening_summary.json found.", file=sys.stderr)
-        else:
-            results["nse"] = rebuild_market_db(
-                market="nse",
-                companies_dir=COMPANIES_DIR,
-                indices_dir=INDICES_DIR,
-            )
-
-    if market in ("snp", "all"):
-        if not SNP_INDICES_DIR.exists():
-            print("  No SNP screening_summary.json found.", file=sys.stderr)
-        else:
-            results["snp"] = rebuild_market_db(
-                market="snp",
-                companies_dir=SNP_COMPANIES_DIR,
-                indices_dir=SNP_INDICES_DIR,
-            )
-
-    return results
-
+from screener.db import rebuild
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser(description="Rebuild screener.db from curated JSON")
     parser.add_argument(
         "--market",

@@ -225,9 +225,6 @@ def rebuild_market_db(
     """
     import duckdb
 
-    ROOT = Path(__file__).resolve().parent.parent.parent
-    db_path = ROOT / "data" / "screener.db"
-
     summary_path = indices_dir / "screening_summary.json"
     companies_glob = str(companies_dir / "*.json")
     stats_path = indices_dir / "industry_stats.json"
@@ -236,7 +233,7 @@ def rebuild_market_db(
     summary = json.load(open(summary_path))
     companies = summary.get("companies", [])
 
-    con = duckdb.connect(str(db_path))
+    con = duckdb.connect(str(BUILD_DB_DB_PATH))
     try:
         con.register("_summary_rows", pd.DataFrame(companies))
         con.execute(f"CREATE OR REPLACE TABLE {prefix} AS SELECT * FROM _summary_rows")
@@ -271,37 +268,19 @@ def rebuild_market_db(
     return result
 
 
-def _rebuild_db() -> dict:
-    """Rebuild all DuckDB tables from curated JSON."""
+def drop_market_tables(market: str) -> None:
+    """Drop a market's tables so a market whose curated JSON no longer exists
+    doesn't leave stale rows behind in screener.db (rebuild_market_db only
+    replaces tables for markets it actually rebuilds)."""
     import duckdb
 
-    ROOT = Path(__file__).resolve().parent.parent.parent
-    db_path = ROOT / "data" / "screener.db"
-
-    con = duckdb.connect(str(db_path))
+    prefix = market.lower()
+    con = duckdb.connect(str(BUILD_DB_DB_PATH))
     try:
-        # Drop all tables first
-        for table in ["nse", "nse_companies", "nse_industry_stats",
-                      "snp", "snp_companies", "snp_industry_stats"]:
-            con.execute(f"DROP TABLE IF EXISTS {table}")
+        for suffix in ("", "_companies", "_industry_stats"):
+            con.execute(f"DROP TABLE IF EXISTS {prefix}{suffix}")
     finally:
         con.close()
-
-    results = {}
-    results["nse"] = rebuild_market_db(
-        market="nse",
-        companies_dir=COMPANIES_DIR,
-        indices_dir=INDICES_DIR,
-    )
-    results["snp"] = rebuild_market_db(
-        market="snp",
-        companies_dir=SNP_COMPANIES_DIR,
-        indices_dir=SNP_INDICES_DIR,
-    )
-
-    # Summarize
-    total = sum(r["tables"][t] for r in results.values() for t in r["tables"])
-    return {"rebuilt_at": datetime.now().isoformat(), "total_rows": total}
 
 
 def update_manifest(market: str, entry: dict, *, touch_generated_at: bool = True) -> None:

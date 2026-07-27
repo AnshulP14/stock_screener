@@ -23,22 +23,6 @@ def _safe_float(v: Any) -> float | None:
         return None
 
 
-def _get_fiscal_year(ts: pd.Timestamp) -> int:
-    """Indian FY: Apr 1 - Mar 31. FY ending Mar 2024 = FY2024."""
-    if ts.month >= 4:
-        return ts.year + 1
-    return ts.year
-
-
-def _serialize_df(df: pd.DataFrame) -> dict | None:
-    if df is None or df.empty:
-        return None
-    try:
-        return {col: df[col].to_dict() for col in df.columns}
-    except Exception:
-        return None
-
-
 # ── Extractors ──────────────────────────────────────────────────────
 
 def build_current_snapshot(data: dict[str, Any], nse_metadata: dict[str, dict] | None = None) -> dict:
@@ -62,7 +46,7 @@ def build_current_snapshot(data: dict[str, Any], nse_metadata: dict[str, dict] |
         "enterpriseToEbitda", "enterpriseToRevenue", "priceToSalesTrailing12Months",
         "returnOnEquity", "returnOnAssets", "profitMargins",
         "grossMargins", "operatingMargins", "ebitdaMargins",
-        "debtToEquity", "currentRatio", "quickRatio",
+        "debtToEquity", "currentRatio", "quickRatio", "beta",
         "revenueGrowth", "earningsGrowth", "earningsQuarterlyGrowth",
         "marketCap", "enterpriseValue", "totalRevenue",
         "freeCashflow", "operatingCashflow", "ebitda", "grossProfits",
@@ -139,28 +123,6 @@ def _process_annual_statement(df: pd.DataFrame) -> pd.DataFrame:
         return transposed.groupby("fiscal_year").last().T
     except Exception:
         return pd.DataFrame()
-
-
-def _price_stats(price_hist: pd.DataFrame) -> dict[int, dict]:
-    """Average/high/low per fiscal year."""
-    if price_hist is None or price_hist.empty:
-        return {}
-    try:
-        df = price_hist.copy()
-        df.index = pd.to_datetime(df.index)
-        df["fiscal_year"] = df.index.to_series().apply(lambda t: t.year + 1 if t.month >= 4 else t.year)
-        out = {}
-        for fy, g in df.groupby("fiscal_year"):
-            out[fy] = {
-                "avg_price": g["Close"].mean() if "Close" in g.columns else None,
-                "high_price": g["High"].max() if "High" in g.columns else None,
-                "low_price": g["Low"].min() if "Low" in g.columns else None,
-                "year_end_price": g["Close"].iloc[-1] if "Close" in g.columns else None,
-                "avg_volume": g["Volume"].mean() if "Volume" in g.columns else None,
-            }
-        return out
-    except Exception:
-        return {}
 
 
 def _row_values(df: pd.DataFrame, label: str) -> list[float | None]:
