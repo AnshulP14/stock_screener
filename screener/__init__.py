@@ -27,6 +27,17 @@ from .transform import (
     generate_insights,
     build_company_json,
 )
+from .trends import (
+    GrowthTrend,
+    LeverageBand,
+    MarginDirection,
+    average_roe,
+    cagr,
+    classify_growth,
+    classify_leverage,
+    classify_margin_direction,
+    yoy,
+)
 from .index import (
     build_indices,
     rebuild_market_db,

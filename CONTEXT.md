@@ -24,6 +24,17 @@ here the moment its meaning gets clarified in conversation.
   primitives in `screener/`.
 - **Enrichment** — the Screener.in-scraped datasets (`shareholding`, `credit_ratings`)
   layered onto NSE company profiles after the core yfinance fetch. `screener/enrich.py`.
+- **TrendVerdict** — the closed vocabulary a `historical_trends.*` field's `trend`/
+  `direction` value is drawn from, and the pure classifiers that produce it, all in
+  `screener/trends.py`: `GrowthTrend` (revenue/EPS/FCF direction over ≥3 points),
+  `MarginDirection` (expanding/contracting/stable off a two-point delta), `LeverageBand`
+  (debt-free/low/moderate/high off the *latest* debt/equity ratio — a level, not a
+  delta, which is why it needs its own classifier rather than reusing
+  `MarginDirection`). `generate_insights` in `screener/transform.py` matches on these
+  values to produce `key_insights`. Not yet unified: `screener/enrich.py`'s
+  shareholding `_holding_trend` (increasing/decreasing/stable) is a fourth, separate
+  three-state vocabulary for a similar-shaped idea — worth folding in if it ever grows
+  a second consumer, not before.
 
 ## Package structure
 

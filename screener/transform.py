@@ -8,7 +8,14 @@ from typing import Any
 
 import pandas as pd
 
-
+from .trends import (
+    average_roe,
+    cagr,
+    classify_growth,
+    classify_leverage,
+    classify_margin_direction,
+    yoy,
+)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
@@ -137,52 +144,6 @@ def _row_values(df: pd.DataFrame, label: str) -> list[float | None]:
     return [_safe_float(v) for v in row]
 
 
-def _yoy(values: list[float | None]) -> list[float | None]:
-    if len(values) < 2:
-        return [None] * len(values)
-    out = [None]
-    for i in range(1, len(values)):
-        a, b = values[i-1], values[i]
-        out.append((b - a) / abs(a) if a and b and a != 0 else None)
-    return out
-
-
-def _cagr(values: list[float | None]) -> float | None:
-    valid = [(i, v) for i, v in enumerate(values) if v is not None and v > 0]
-    if len(valid) < 2:
-        return None
-    n = valid[-1][0] - valid[0][0]
-    if n <= 0:
-        return None
-    return (valid[-1][1] / valid[0][1]) ** (1 / n) - 1
-
-
-def _trend(values: list[float | None]) -> str:
-    clean = [v for v in values if v is not None]
-    if len(clean) < 3:
-        return "insufficient_data"
-    ups = sum(1 for a, b in zip(clean, clean[1:]) if b > a)
-    if ups >= len(clean) - 1:
-        return "consistently_growing"
-    if ups == 0:
-        return "declining"
-    if ups >= (len(clean) - 1) * 0.6:
-        return "mostly_growing"
-    return "volatile"
-
-
-def _classify_margin(values: list[float | None]) -> str:
-    v = [v for v in values if v is not None]
-    if len(v) < 2:
-        return "insufficient_data"
-    change = v[-1] - v[0]
-    if change > 0.02:
-        return "expanding"
-    if change < -0.02:
-        return "contracting"
-    return "stable"
-
-
 # ── Trend computation ───────────────────────────────────────────────
 
 def build_historical_trends(data: dict[str, Any]) -> dict[str, Any]:
@@ -217,47 +178,51 @@ def build_historical_trends(data: dict[str, Any]) -> dict[str, Any]:
     ni = [v for v in ni_vals if _safe_float(v)]
     eps = [v for v in eps_vals if _safe_float(v)]
 
+    operating_margin = _compute_operating_margin(rev_vals, op_vals)
+    roe_values = [_safe_float(ni_v / eq) if _safe_float(ni_v) is not None and eq else None
+                  for ni_v, eq in zip(ni_vals, eq_vals)]
+    debt_to_equity_values = [_safe_float(d / e) if _safe_float(d) is not None and e else None
+                             for d, e in zip(debt_vals, eq_vals)]
+
     return {
         "source": "yfinance",
         "years_available": years,
         "revenue": {
             "values_inr": rev_vals,
-            "yoy_growth": _yoy(rev_vals),
-            "cagr_3yr": _cagr(rev),
-            "trend": _trend(rev_vals),
+            "yoy_growth": yoy(rev_vals),
+            "cagr_3yr": cagr(rev),
+            "trend": classify_growth(rev_vals),
         },
         "net_income": {
             "values_inr": ni_vals,
-            "cagr_3yr": _cagr(ni),
-            "trend": _trend(ni_vals),
+            "cagr_3yr": cagr(ni),
+            "trend": classify_growth(ni_vals),
         },
         "eps": {
             "values": eps_vals,
-            "cagr_3yr": _cagr(eps),
-            "trend": _trend(eps_vals),
+            "cagr_3yr": cagr(eps),
+            "trend": classify_growth(eps_vals),
         },
         "gross_profit": {
             "values_inr": gross_vals,
-            "trend": _trend(gross_vals),
+            "trend": classify_growth(gross_vals),
         },
         "operating_margin": {
-            "values": _yoy(operating_margin := _compute_operating_margin(rev_vals, op_vals)),
-            "direction": _classify_margin(operating_margin),
+            "values": operating_margin,
+            "direction": classify_margin_direction(operating_margin),
         },
         "roe": {
-            "values": [_safe_float(ni_v / eq) if _safe_float(ni_v) is not None and eq else None
-                       for ni_v, eq in zip(ni_vals, eq_vals)],
-            "avg_3yr": _cagr(ni) if _cagr(ni) else None,  # proxy
+            "values": roe_values,
+            "avg_3yr": average_roe(roe_values),
         },
         "debt_to_equity": {
-            "values": [_safe_float(d / e) if _safe_float(d) is not None and e else None
-                       for d, e in zip(debt_vals, eq_vals)],
-            "trend": _classify_margin(debt_vals),
+            "values": debt_to_equity_values,
+            "trend": classify_leverage(debt_to_equity_values),
         },
         "free_cash_flow": {
             "values_inr": cf_vals,
             "positive_years": sum(1 for v in cf_vals if _safe_float(v) and v > 0),
-            "trend": _trend(cf_vals),
+            "trend": classify_growth(cf_vals),
         },
     }
 
