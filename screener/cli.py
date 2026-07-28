@@ -14,9 +14,17 @@ Usage:
 import argparse
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from screener.markets import nse as nse_market
 from screener.markets import snp as snp_market
+
+
+def _run_market(label: str, run_fn, kwargs: dict):
+    print(f"\n{'─' * 60}")
+    print(f"  {label}")
+    print(f"{'─' * 60}")
+    return label, run_fn(**kwargs)
 
 
 def main() -> None:
@@ -81,9 +89,7 @@ def main() -> None:
         print("Nothing to do.", file=sys.stderr)
         sys.exit(1)
 
-    start = time.time()
-    results = {}
-
+    jobs = []
     for label, run_fn in markets:
         mode = args.mode
 
@@ -104,15 +110,28 @@ def main() -> None:
         if label == "NSE500":
             kwargs["no_transform"] = args.no_transform
 
-        print(f"\n{'─' * 60}")
-        print(f"  {label}")
-        print(f"{'─' * 60}")
-        try:
-            result = run_fn(**kwargs)
-            results[label] = result
-        except Exception as e:
-            print(f"\n  ERROR: {e}")
-            sys.exit(1)
+        jobs.append((label, run_fn, kwargs))
+
+    # Markets run concurrently as separate threads, but yfinance itself stays
+    # a single sequential stream (screener.fetch._YFINANCE_LOCK) regardless --
+    # this only buys overlap between NSE's Screener.in enrichment and SNP's
+    # yfinance fetch, two genuinely different hosts.
+    start = time.time()
+    results = {}
+    errors = []
+
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        futures = [pool.submit(_run_market, label, run_fn, kwargs) for label, run_fn, kwargs in jobs]
+        for future in as_completed(futures):
+            try:
+                label, result = future.result()
+                results[label] = result
+            except Exception as e:
+                errors.append(str(e))
+                print(f"\n  ERROR: {e}")
+
+    if errors:
+        sys.exit(1)
 
     elapsed = time.time() - start
     print(f"\n\n{'═' * 60}")

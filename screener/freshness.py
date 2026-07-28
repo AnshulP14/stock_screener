@@ -44,6 +44,19 @@ Policy = QuarterLag | AgeDays
 
 # NSE fiscal quarters end Mar/Jun/Sep/Dec.
 _QUARTER_MONTH_NAME = {3: "Mar", 6: "Jun", 9: "Sep", 12: "Dec"}
+_QUARTER_NAME_MONTH = {v: k for k, v in _QUARTER_MONTH_NAME.items()}
+
+
+def _quarter_key(label: str) -> tuple[int, int] | None:
+    """Parse a 'Mon YYYY' shareholding-quarter label into a (year, month) sort
+    key, or None if it doesn't look like one."""
+    parts = label.split()
+    if len(parts) != 2 or parts[0] not in _QUARTER_NAME_MONTH:
+        return None
+    try:
+        return (int(parts[1]), _QUARTER_NAME_MONTH[parts[0]])
+    except ValueError:
+        return None
 
 
 def expected_latest_quarter(market: Market, today: date | None = None) -> str:
@@ -83,7 +96,15 @@ def is_stale(company: dict, policy: Policy, today: date | None = None) -> bool:
     if value is _SENTINEL or value is None:
         return True
     if isinstance(policy, QuarterLag):
-        return value != expected_latest_quarter(policy.market, today)
+        expected = expected_latest_quarter(policy.market, today)
+        value_key, expected_key = _quarter_key(value), _quarter_key(expected)
+        # lag_days is a conservative floor -- real disclosed data is often
+        # already ahead of it (e.g. NSE's actual ~21-day filing deadline vs.
+        # the 45-day default here). Only behind-expected counts as stale;
+        # an unparseable label falls back to exact match.
+        if value_key is None or expected_key is None:
+            return value != expected
+        return value_key < expected_key
     try:
         return (today or date.today()) - date.fromisoformat(value) > timedelta(days=policy.days)
     except (TypeError, ValueError):

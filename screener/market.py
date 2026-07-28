@@ -49,6 +49,15 @@ class MarketConfig:
     # enrich.py by market would read/write against NSE's company directory.
     enrichment_datasets: tuple[str, ...] = ()
     raw_csv_dir: Path | None = None
+    # Phase 5: SNP's historical_trends come from SEC EDGAR XBRL company-facts
+    # (screener.statements.AnnualStatements.from_edgar), not yfinance's annual
+    # DataFrames -- a CIK is required to fetch them. NSE has no EDGAR/CIK
+    # concept at all.
+    uses_edgar: bool = False
+    # SNP-only: institutional_ownership (screener.transform.
+    # build_institutional_ownership) needs ticker.institutional_holders, a
+    # distinct yfinance call NSE has no use for.
+    fetch_institutional_holders: bool = False
 
 
 def _nse_fiscal_year(d: date) -> int:
@@ -114,4 +123,6 @@ SNP = MarketConfig(
     valid_modes=("full", "incremental", "sync-universe", "rebuild"),
     fetch_universe=_snp_universe,
     staleness_policies=_snp_staleness_policies,
+    uses_edgar=True,
+    fetch_institutional_holders=True,
 )

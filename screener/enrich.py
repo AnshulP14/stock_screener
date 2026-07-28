@@ -197,10 +197,24 @@ DATASETS = {
 }
 
 
-def get_stale_symbols(dataset: str) -> list[str]:
+def get_stale_symbols(dataset: str, symbols: list[str] | None = None) -> list[str]:
+    """Stale symbols for `dataset`.
+
+    `symbols`, when given, restricts the check to that explicit set (a
+    targeted `--symbols` run) instead of sweeping every company on disk --
+    otherwise a single-symbol retry re-checks enrichment staleness for the
+    whole universe.
+    """
     _, _, is_stale = DATASETS[dataset]
+    paths = (
+        [COMPANIES_DIR / f"{s}.json" for s in symbols]
+        if symbols is not None
+        else sorted(COMPANIES_DIR.glob("*.json"))
+    )
     stale = []
-    for p in sorted(COMPANIES_DIR.glob("*.json")):
+    for p in paths:
+        if not p.exists():
+            continue
         try:
             with open(p) as f:
                 stale.append(p.stem) if is_stale(json.load(f)) else None

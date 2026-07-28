@@ -24,12 +24,18 @@ import pandas as pd
 
 from screener.config import MAX_WORKERS, RATE_LIMIT_DELAY, ROOT
 from screener.enrich import get_stale_symbols, process_symbols
-from screener.fetch import fetch_ticker_data
+from screener.fetch import build_cik_map, fetch_edgar_facts, fetch_ticker_data
 from screener.freshness import is_stale
 from screener.index import build_indices, update_manifest
 from screener.market import MarketConfig
 from screener.runner import run_fetch_pipeline, write_failure_log
-from screener.transform import build_company_json, build_current_snapshot, build_historical_trends
+from screener.transform import (
+    build_company_json,
+    build_current_snapshot,
+    build_historical_trends,
+    build_historical_trends_edgar,
+    build_institutional_ownership,
+)
 
 
 def _stale_symbols_for(market: MarketConfig, symbols: list[str], days_old: int) -> list[str]:
@@ -122,10 +128,15 @@ def _fetch_and_save(
     dry_run: bool,
     no_transform: bool,
     start: float,
+    enrichment_symbols: list[str] | None = None,
 ) -> dict:
     """Fetch, transform and persist `symbols`, then rebuild indices and run
     any per-market enrichment. Shared by every mode that ends in an actual
-    fetch (sync-universe, full, quick, incremental, targeted)."""
+    fetch (sync-universe, full, quick, incremental, targeted).
+
+    enrichment_symbols: restricts the enrichment staleness check to this set
+    (a targeted `--symbols` run) instead of the whole companies_dir -- see
+    get_stale_symbols."""
     companies_dir = market.companies_dir
     indices_dir = market.indices_dir
 
@@ -145,9 +156,25 @@ def _fetch_and_save(
     # rate-limited run keeps everything fetched up to that point.
     companies_dir.mkdir(parents=True, exist_ok=True)
 
+    # Built once per run, not per symbol -- build_cik_map does a single bulk
+    # fetch of SEC's full ticker->CIK table (see fetch.build_cik_map's
+    # docstring: no cik_map.json cache, resolved fresh in memory each run).
+    cik_map = build_cik_map() if market.uses_edgar else {}
+
     def handle(sym: str, raw: dict) -> dict:
-        trends = build_historical_trends(raw, market)
-        company = build_company_json(sym, raw, metadata, trends, None, None, market=market)
+        if market.uses_edgar:
+            cik = cik_map.get(sym)
+            trends = build_historical_trends_edgar(fetch_edgar_facts(sym, cik))
+        else:
+            cik = None
+            trends = build_historical_trends(raw, market)
+        institutional_ownership = (
+            build_institutional_ownership(raw) if market.fetch_institutional_holders else None
+        )
+        company = build_company_json(
+            sym, raw, metadata, trends, None, None, market=market,
+            cik=cik, institutional_ownership=institutional_ownership,
+        )
         tmp = companies_dir / f".{sym}.json.tmp"
         with open(tmp, "w") as f:
             json.dump(company, f, indent=2)
@@ -157,7 +184,9 @@ def _fetch_and_save(
 
     report = run_fetch_pipeline(
         symbols,
-        fetch_fn=lambda s: fetch_ticker_data(f"{s}{market.ticker_suffix}"),
+        fetch_fn=lambda s: fetch_ticker_data(
+            f"{s}{market.ticker_suffix}", institutional_holders=market.fetch_institutional_holders
+        ),
         handle_fn=handle,
         workers=workers,
         label=market.fetch_label,
@@ -174,7 +203,7 @@ def _fetch_and_save(
     if market.enrichment_datasets:
         print("\nUpdating enrichments...")
         for dataset in market.enrichment_datasets:
-            stale = get_stale_symbols(dataset)
+            stale = get_stale_symbols(dataset, enrichment_symbols)
             if stale:
                 ok, skipped, failed_n = process_symbols(stale, dataset)
                 print(f"  {dataset}: {ok} updated  {skipped} skipped  {failed_n} failed")
@@ -239,6 +268,7 @@ def run_pipeline(
 
     metadata = None
     total_considered = 0
+    targeted = False
 
     if mode == "sync-universe":
         print("\nMode: SYNC UNIVERSE")
@@ -288,6 +318,7 @@ def run_pipeline(
     else:
         symbols = [s.upper() for s in symbols]
         total_considered = len(symbols)
+        targeted = True
         print(f"\nMode: TARGETED ({len(symbols)} companies)")
 
     if not symbols:
@@ -297,4 +328,5 @@ def run_pipeline(
     return _fetch_and_save(
         market, symbols, metadata,
         workers=workers, dry_run=dry_run, no_transform=no_transform, start=start,
+        enrichment_symbols=symbols if targeted else None,
     )

@@ -226,6 +226,104 @@ def _compute_operating_margin(rev, op):
     return m
 
 
+def build_historical_trends_edgar(facts: dict | None) -> dict[str, Any]:
+    """Compute S&P500's historical_trends from a SEC XBRL companyfacts
+    payload (screener.fetch.fetch_edgar_facts), via AnnualStatements.from_edgar.
+
+    Deliberately a smaller, different metric set than NSE's yfinance-derived
+    build_historical_trends -- see data/SCHEMA.md's historical_trends table:
+    no yoy_growth, and no roe/debt_to_equity/free_cash_flow (AnnualStatements.
+    from_edgar doesn't extract balance-sheet tags for those), plus
+    operating_cash_flow, which NSE doesn't track.
+    """
+    statements = AnnualStatements.from_edgar(facts)
+    years = statements.years
+    if not years:
+        return {"source": "edgar_xbrl", "years_available": [], "error": "no_edgar_data"}
+
+    rev_vals = statements.revenue
+    ni_vals = statements.net_income
+    eps_vals = statements.diluted_eps
+    gross_vals = statements.gross_profit
+    op_vals = statements.operating_income
+    ocf_vals = statements.operating_cash_flow
+
+    rev = [v for v in rev_vals if _safe_float(v)]
+    ni = [v for v in ni_vals if _safe_float(v)]
+    eps = [v for v in eps_vals if _safe_float(v)]
+
+    operating_margin = _compute_operating_margin(rev_vals, op_vals)
+
+    return {
+        "source": "edgar_xbrl",
+        "years_available": years,
+        "revenue": {
+            "values": rev_vals,
+            "cagr_3yr": cagr(rev),
+            "trend": classify_growth(rev_vals),
+        },
+        "net_income": {
+            "values": ni_vals,
+            "cagr_3yr": cagr(ni),
+            "trend": classify_growth(ni_vals),
+        },
+        "eps": {
+            "values": eps_vals,
+            "cagr_3yr": cagr(eps),
+            "trend": classify_growth(eps_vals),
+        },
+        "operating_margin": {
+            "values": operating_margin,
+        },
+        "gross_profit": {
+            "values_usd": gross_vals,
+        },
+        "operating_cash_flow": {
+            "values_usd": ocf_vals,
+            "positive_years": sum(1 for v in ocf_vals if _safe_float(v) and v > 0),
+            "trend": classify_growth(ocf_vals),
+        },
+    }
+
+
+def build_institutional_ownership(data: dict[str, Any]) -> dict | None:
+    """S&P-only: pct_insider/pct_institutional come from yfinance's info blob
+    (already fetched for current_snapshot, no extra network call);
+    top_holders comes from ticker.institutional_holders, a distinct yfinance
+    call gated by MarketConfig.fetch_institutional_holders (see fetch.
+    fetch_ticker_data). Percentages are stored as whole numbers (52.3 =
+    52.3%), matching NSE's shareholding convention -- yfinance itself
+    reports these as 0-1 fractions.
+
+    Returns None when nothing was fetched (NSE, or a failed/empty SNP fetch),
+    same convention as shareholding/credit_ratings.
+    """
+    info = data.get("info", {})
+    pct_insider = _safe_float(info.get("heldPercentInsiders"))
+    pct_institutional = _safe_float(info.get("heldPercentInstitutions"))
+
+    holders_df = data.get("institutional_holders")
+    top_holders = []
+    if holders_df is not None and not holders_df.empty:
+        for _, row in holders_df.iterrows():
+            pct_out = _safe_float(row.get("pctHeld"))
+            top_holders.append({
+                "holder": row.get("Holder"),
+                "shares": _safe_float(row.get("Shares")),
+                "pct_out": pct_out * 100 if pct_out is not None else None,
+            })
+
+    if pct_insider is None and pct_institutional is None and not top_holders:
+        return None
+
+    return {
+        "updated_at": date.today().isoformat(),
+        "pct_insider": pct_insider * 100 if pct_insider is not None else None,
+        "pct_institutional": pct_institutional * 100 if pct_institutional is not None else None,
+        "top_holders": top_holders,
+    }
+
+
 # ── Insights ────────────────────────────────────────────────────────
 
 def generate_insights(trends: dict[str, Any]) -> list[str]:
@@ -251,12 +349,16 @@ def generate_insights(trends: dict[str, Any]) -> list[str]:
         insights.append("Operating cash flow declining")
 
     ddte = debt.get("trend")
+    # classify_leverage() bands the latest *non-null* value (the most recent
+    # year can be None if not yet reported) -- mirror that here rather than
+    # indexing values[-1] directly, which crashed on names like NESTLEIND.
+    latest_de = next((v for v in reversed(debt.get("values", [])) if v is not None), None)
     if ddte == "debt_free":
         insights.append("Virtually debt-free")
-    if ddte == "low":
-        insights.append(f"Low leverage (D/E {debt['values'][-1]:.2f})")
-    if ddte == "high":
-        insights.append(f"High leverage (D/E {debt['values'][-1]:.2f})")
+    if ddte == "low" and latest_de is not None:
+        insights.append(f"Low leverage (D/E {latest_de:.2f})")
+    if ddte == "high" and latest_de is not None:
+        insights.append(f"High leverage (D/E {latest_de:.2f})")
 
     return insights[:5]
 
@@ -272,6 +374,8 @@ def build_company_json(
     shareholding: dict | None = None,
     credit_ratings: dict | None = None,
     market: MarketConfig = NSE,
+    cik: int | None = None,
+    institutional_ownership: dict | None = None,
 ) -> dict:
     """Assemble the final per-company JSON."""
     info = data.get("info", {})
@@ -283,11 +387,12 @@ def build_company_json(
         "sector": info.get("sector") or "",
         "industry": info.get("industry") or "",
         "currency": market.currency,
-        "cik": None,
+        "cik": cik,
         "current_snapshot": snapshot,
         "historical_trends": historical_trends or {},
         "key_insights": generate_insights(historical_trends or {}),
         "industry_comparison": industry_comparison,
         "shareholding": shareholding,
         "credit_ratings": credit_ratings,
+        "institutional_ownership": institutional_ownership,
     }

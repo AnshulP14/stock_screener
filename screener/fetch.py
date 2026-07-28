@@ -107,7 +107,7 @@ def fetch_sp500_universe() -> list[dict]:
     return companies
 
 
-def _build_cik_map() -> dict[str, int]:
+def build_cik_map() -> dict[str, int]:
     """Fetch fresh CIK→ticker map from SEC."""
     resp = requests.get(EDGAR_TICKERS, headers={"User-Agent": _edgar_ua()}, timeout=30)
     resp.raise_for_status()
@@ -145,6 +145,11 @@ def fetch_edgar_facts(symbol: str, cik: int | None) -> dict | None:
 
 _thread_local = threading.local()
 
+# Serializes every yfinance call process-wide -- both NSE and SNP pipelines
+# hit the same Yahoo Finance host, so this makes it one sequential stream
+# even when the two markets' pipelines run concurrently in separate threads.
+_YFINANCE_LOCK = threading.Lock()
+
 
 def _yf_session():
     """Per-thread yfinance session carrying a hard timeout.
@@ -172,34 +177,64 @@ def _empty_result(symbol: str, error: str | None) -> dict[str, Any]:
         "annual_income": pd.DataFrame(),
         "annual_balance": pd.DataFrame(),
         "annual_cashflow": pd.DataFrame(),
+        "institutional_holders": pd.DataFrame(),
         "fetch_time": date.today().isoformat(),
         "error": error,
     }
 
 
-def fetch_ticker_data(symbol: str) -> dict[str, Any]:
+def fetch_ticker_data(symbol: str, *, institutional_holders: bool = False) -> dict[str, Any]:
     """Fetch all fundamentals for a single symbol via yfinance.
 
     Never raises — failures come back as a populated "error" key so callers can
     classify them (see `runner.is_rate_limit_error`) and decide about retrying.
+
+    institutional_holders: also fetch ticker.institutional_holders (S&P-only;
+    see MarketConfig.fetch_institutional_holders) -- skipped by default since
+    NSE has no use for it and it's a distinct network call.
     """
     try:
-        ticker = yf.Ticker(symbol, session=_yf_session())
-        info = ticker.info or {}
-        # An unknown/delisted symbol returns a stub with no pricing fields.
-        if not info.get("symbol") and not info.get("regularMarketPrice"):
-            return _empty_result(symbol, "no data returned (delisted or unknown symbol)")
-        return {
-            "symbol": symbol,
-            "info": info,
-            "quarterly_income": _df_or_empty(ticker.quarterly_income_stmt),
-            "quarterly_balance": _df_or_empty(ticker.quarterly_balance_sheet),
-            "quarterly_cashflow": _df_or_empty(ticker.quarterly_cashflow),
-            "annual_income": _df_or_empty(ticker.income_stmt),
-            "annual_balance": _df_or_empty(ticker.balance_sheet),
-            "annual_cashflow": _df_or_empty(ticker.cashflow),
-            "fetch_time": date.today().isoformat(),
-            "error": None,
-        }
+        with _YFINANCE_LOCK:
+            ticker = yf.Ticker(symbol, session=_yf_session())
+            info = ticker.info or {}
+            # An unknown/delisted symbol returns a stub with no pricing fields.
+            if not info.get("symbol") and not info.get("regularMarketPrice"):
+                return _empty_result(symbol, "no data returned (delisted or unknown symbol)")
+            return {
+                "symbol": symbol,
+                "info": info,
+                "quarterly_income": _df_or_empty(ticker.quarterly_income_stmt),
+                "quarterly_balance": _df_or_empty(ticker.quarterly_balance_sheet),
+                "quarterly_cashflow": _df_or_empty(ticker.quarterly_cashflow),
+                "annual_income": _df_or_empty(ticker.income_stmt),
+                "annual_balance": _df_or_empty(ticker.balance_sheet),
+                "annual_cashflow": _df_or_empty(ticker.cashflow),
+                "institutional_holders": (
+                    _df_or_empty(ticker.institutional_holders) if institutional_holders else pd.DataFrame()
+                ),
+                "fetch_time": date.today().isoformat(),
+                "error": None,
+            }
     except Exception as e:
         return _empty_result(symbol, str(e))
+
+
+def fetch_ownership_snapshot(symbol: str) -> dict[str, Any]:
+    """Lightweight fetch for institutional_ownership alone: ticker.info (for
+    heldPercentInsiders/heldPercentInstitutions) and ticker.institutional_holders.
+
+    Skips the six statement calls fetch_ticker_data makes -- for callers that
+    already have fresh snapshot/statement data on disk and only need to
+    (re)compute institutional_ownership (see transform.build_institutional_ownership).
+    """
+    try:
+        with _YFINANCE_LOCK:
+            ticker = yf.Ticker(symbol, session=_yf_session())
+            return {
+                "symbol": symbol,
+                "info": ticker.info or {},
+                "institutional_holders": _df_or_empty(ticker.institutional_holders),
+                "error": None,
+            }
+    except Exception as e:
+        return {"symbol": symbol, "info": {}, "institutional_holders": pd.DataFrame(), "error": str(e)}

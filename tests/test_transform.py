@@ -10,8 +10,16 @@ existed. market defaults to NSE (preserving every pre-existing call site
 above), but snp.py now passes market=SNP explicitly.
 """
 
+import pandas as pd
+import pytest
+
 from screener.market import SNP
-from screener.transform import build_company_json, build_current_snapshot
+from screener.transform import (
+    build_company_json,
+    build_current_snapshot,
+    build_historical_trends_edgar,
+    build_institutional_ownership,
+)
 
 
 def test_beta_is_extracted_from_info():
@@ -71,3 +79,93 @@ def test_nse_symbol_strips_ns_suffix_via_market_ticker_suffix():
     company = build_company_json("RELIANCE.NS", data)  # default market=NSE
     assert company["symbol"] == "RELIANCE"
     assert company["currency"] == "INR"
+
+
+def test_company_json_defaults_cik_and_institutional_ownership_to_none():
+    data = {"symbol": "RELIANCE.NS", "info": {}, "fetch_time": "2026-01-01", "error": None}
+    company = build_company_json("RELIANCE.NS", data)
+    assert company["cik"] is None
+    assert company["institutional_ownership"] is None
+
+
+def test_company_json_carries_through_cik_and_institutional_ownership():
+    data = {"symbol": "AAPL", "info": {}, "fetch_time": "2026-01-01", "error": None}
+    io = {"updated_at": "2026-01-01", "pct_insider": 1.6, "pct_institutional": 66.5, "top_holders": []}
+    company = build_company_json("AAPL", data, market=SNP, cik=320193, institutional_ownership=io)
+    assert company["cik"] == 320193
+    assert company["institutional_ownership"] == io
+
+
+# ── build_historical_trends_edgar ────────────────────────────────────
+
+def _edgar_entry(fy, val):
+    return {"form": "10-K", "fp": "FY", "fy": fy, "val": val, "filed": "2024-01-01"}
+
+
+def _edgar_facts():
+    return {"facts": {"us-gaap": {
+        "Revenues": {"units": {"USD": [_edgar_entry(2023, 1000.0), _edgar_entry(2024, 1100.0)]}},
+        "NetIncomeLoss": {"units": {"USD": [_edgar_entry(2023, 100.0), _edgar_entry(2024, 121.0)]}},
+        "EarningsPerShareDiluted": {"units": {"USD/shares": [_edgar_entry(2023, 5.0), _edgar_entry(2024, 6.0)]}},
+        "GrossProfit": {"units": {"USD": [_edgar_entry(2023, 400.0), _edgar_entry(2024, 450.0)]}},
+        "OperatingIncomeLoss": {"units": {"USD": [_edgar_entry(2023, 80.0), _edgar_entry(2024, 99.0)]}},
+        "NetCashProvidedByUsedInOperatingActivities": {"units": {"USD": [
+            _edgar_entry(2023, -10.0), _edgar_entry(2024, 150.0),
+        ]}},
+    }}}
+
+
+def test_build_historical_trends_edgar_source_is_edgar_xbrl():
+    trends = build_historical_trends_edgar(_edgar_facts())
+    assert trends["source"] == "edgar_xbrl"
+    assert trends["years_available"] == [2023, 2024]
+
+
+def test_build_historical_trends_edgar_has_no_yoy_growth_roe_or_debt_fields():
+    trends = build_historical_trends_edgar(_edgar_facts())
+    assert "yoy_growth" not in trends["revenue"]
+    assert "roe" not in trends
+    assert "debt_to_equity" not in trends
+    assert "free_cash_flow" not in trends
+
+
+def test_build_historical_trends_edgar_gross_profit_and_ocf_use_values_usd_key():
+    trends = build_historical_trends_edgar(_edgar_facts())
+    assert trends["gross_profit"]["values_usd"] == [400.0, 450.0]
+    assert trends["operating_cash_flow"]["values_usd"] == [-10.0, 150.0]
+    assert trends["operating_cash_flow"]["positive_years"] == 1
+
+
+def test_build_historical_trends_edgar_operating_margin_has_only_values():
+    trends = build_historical_trends_edgar(_edgar_facts())
+    assert trends["operating_margin"] == {"values": pytest.approx([0.08, 0.09])}
+
+
+def test_build_historical_trends_edgar_no_data_returns_error_marker():
+    trends = build_historical_trends_edgar(None)
+    assert trends == {"source": "edgar_xbrl", "years_available": [], "error": "no_edgar_data"}
+
+
+# ── build_institutional_ownership ────────────────────────────────────
+
+def test_institutional_ownership_reads_pct_fields_from_info_as_whole_numbers():
+    data = {"info": {"heldPercentInsiders": 0.0163, "heldPercentInstitutions": 0.66496}}
+    io = build_institutional_ownership(data)
+    assert io["pct_insider"] == pytest.approx(1.63)
+    assert io["pct_institutional"] == pytest.approx(66.496)
+
+
+def test_institutional_ownership_top_holders_from_institutional_holders_df():
+    df = pd.DataFrame([
+        {"Holder": "Blackrock Inc.", "Shares": 1144695425, "pctHeld": 0.0779},
+        {"Holder": "Vanguard Capital Management LLC", "Shares": 953847648, "pctHeld": 0.0649},
+    ])
+    data = {"info": {}, "institutional_holders": df}
+    io = build_institutional_ownership(data)
+    assert io["top_holders"][0] == {"holder": "Blackrock Inc.", "shares": 1144695425.0, "pct_out": pytest.approx(7.79)}
+    assert len(io["top_holders"]) == 2
+
+
+def test_institutional_ownership_returns_none_when_nothing_fetched():
+    assert build_institutional_ownership({"info": {}}) is None
+    assert build_institutional_ownership({"info": {}, "institutional_holders": pd.DataFrame()}) is None

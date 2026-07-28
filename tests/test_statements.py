@@ -143,3 +143,73 @@ def test_us_fiscal_year_uses_calendar_year_of_period_end_not_nse_apr_mar_rule():
 
     assert nse_stmts.years == [2024, 2025]  # Sept >= month 4 -> year+1 under NSE's rule
     assert snp_stmts.years == [2023, 2024]   # calendar year of period-end, unadjusted
+
+
+# ── from_edgar ────────────────────────────────────────────────────────
+
+def _entry(fy, val, *, form="10-K", fp="FY", filed="2024-01-01"):
+    return {"form": form, "fp": fp, "fy": fy, "val": val, "filed": filed}
+
+
+def _facts(**tags):
+    return {"facts": {"us-gaap": tags}}
+
+
+def test_from_edgar_extracts_only_10k_fy_annual_entries():
+    facts = _facts(NetIncomeLoss={"units": {"USD": [
+        _entry(2023, 100.0),
+        _entry(2024, 110.0),
+        # a same-year 10-Q datapoint must not be mistaken for the annual figure
+        _entry(2024, 30.0, form="10-Q", fp="Q3"),
+    ]}})
+    stmts = AnnualStatements.from_edgar(facts)
+    assert stmts.years == [2023, 2024]
+    assert stmts.net_income == [100.0, 110.0]
+
+
+def test_from_edgar_falls_back_across_renamed_tags():
+    # A filer renaming its revenue tag partway through its history (Apple's
+    # real pattern: SalesRevenueNet through FY2017, then
+    # RevenueFromContractWithCustomerExcludingAssessedTax from FY2018).
+    facts = _facts(
+        SalesRevenueNet={"units": {"USD": [_entry(2022, 900.0)]}},
+        RevenueFromContractWithCustomerExcludingAssessedTax={"units": {"USD": [
+            _entry(2023, 1000.0), _entry(2024, 1100.0),
+        ]}},
+    )
+    stmts = AnnualStatements.from_edgar(facts)
+    assert stmts.years == [2022, 2023, 2024]
+    assert stmts.revenue == [900.0, 1000.0, 1100.0]
+
+
+def test_from_edgar_a_year_present_in_a_lower_priority_tag_does_not_override_higher_priority():
+    facts = _facts(
+        RevenueFromContractWithCustomerExcludingAssessedTax={"units": {"USD": [_entry(2023, 1000.0)]}},
+        Revenues={"units": {"USD": [_entry(2023, 999.0)]}},  # same year, lower-priority tag
+    )
+    stmts = AnnualStatements.from_edgar(facts)
+    assert stmts.revenue == [1000.0]
+
+
+def test_from_edgar_restated_entry_for_same_year_keeps_the_latest_filed():
+    facts = _facts(NetIncomeLoss={"units": {"USD": [
+        _entry(2023, 100.0, filed="2024-01-01"),
+        _entry(2023, 105.0, filed="2024-06-01"),  # restatement, filed later
+    ]}})
+    stmts = AnnualStatements.from_edgar(facts)
+    assert stmts.net_income == [105.0]
+
+
+def test_from_edgar_missing_tag_entirely_is_all_none():
+    facts = _facts(NetIncomeLoss={"units": {"USD": [_entry(2023, 100.0)]}})
+    stmts = AnnualStatements.from_edgar(facts)
+    assert stmts.gross_profit == [None]
+    assert stmts.total_debt == [None]
+    assert stmts.stockholders_equity == [None]
+    assert stmts.free_cash_flow == [None]
+
+
+def test_from_edgar_empty_or_none_facts_gives_no_years():
+    assert AnnualStatements.from_edgar(None).years == []
+    assert AnnualStatements.from_edgar({}).years == []
+    assert AnnualStatements.from_edgar({"facts": {}}).years == []

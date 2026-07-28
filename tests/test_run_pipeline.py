@@ -11,9 +11,13 @@ reproduced with a standalone repro (not shown here) before this fix. These
 tests pin that sync-universe now actually reaches the fetch path.
 """
 
+import json
+
+import pandas as pd
 import pytest
 
 from screener import index as index_mod
+from screener import markets as markets_mod
 from screener.market import MarketConfig
 from screener.markets import run_pipeline
 
@@ -27,7 +31,7 @@ def _isolate_manifest(tmp_path, monkeypatch):
     monkeypatch.setattr(index_mod, "MANIFEST_PATH", tmp_path / "manifest.json")
 
 
-def _test_market(tmp_path, *, fetch_universe, valid_modes=("sync-universe",)) -> MarketConfig:
+def _test_market(tmp_path, *, fetch_universe, valid_modes=("sync-universe",), **kwargs) -> MarketConfig:
     return MarketConfig(
         id="test",
         label="TEST",
@@ -40,6 +44,7 @@ def _test_market(tmp_path, *, fetch_universe, valid_modes=("sync-universe",)) ->
         valid_modes=valid_modes,
         fetch_universe=fetch_universe,
         staleness_policies=lambda days_old: (),  # every symbol in `symbols` counts as stale
+        **kwargs,
     )
 
 
@@ -104,3 +109,88 @@ def test_skipped_count_reflects_full_universe_not_hardcoded_zero(tmp_path):
     result = run_pipeline(market, mode="sync-universe")
 
     assert result["skipped"] == 2
+
+
+# ── uses_edgar / fetch_institutional_holders routing ─────────────────
+
+def test_full_mode_with_uses_edgar_routes_through_edgar_trends_and_cik(tmp_path, monkeypatch):
+    """A market with uses_edgar=True must build the CIK map once, resolve
+    each symbol's CIK from it, fetch EDGAR facts, and write historical_trends
+    from build_historical_trends_edgar (not the yfinance-based
+    build_historical_trends) -- with cik carried into the company JSON."""
+    cik_map_calls = []
+    edgar_calls = []
+
+    def fake_build_cik_map():
+        cik_map_calls.append(1)
+        return {"AAA": 111}
+
+    def fake_fetch_edgar_facts(symbol, cik):
+        edgar_calls.append((symbol, cik))
+        return {"facts": {"us-gaap": {}}}  # no tags -> no years, but proves the route was taken
+
+    def fake_fetch_ticker_data(symbol, *, institutional_holders=False):
+        return {"symbol": symbol, "info": {}, "fetch_time": "2026-01-01", "error": None}
+
+    monkeypatch.setattr(markets_mod, "build_cik_map", fake_build_cik_map)
+    monkeypatch.setattr(markets_mod, "fetch_edgar_facts", fake_fetch_edgar_facts)
+    monkeypatch.setattr(markets_mod, "fetch_ticker_data", fake_fetch_ticker_data)
+
+    market = _test_market(
+        tmp_path, fetch_universe=lambda: (["AAA"], None), valid_modes=("full",), uses_edgar=True,
+    )
+    run_pipeline(market, mode="full")
+
+    assert cik_map_calls == [1]  # built once for the whole run, not per symbol
+    assert edgar_calls == [("AAA", 111)]
+
+    company = json.loads((tmp_path / "companies" / "AAA.json").read_text())
+    assert company["cik"] == 111
+    assert company["historical_trends"]["source"] == "edgar_xbrl"
+
+
+def test_full_mode_without_uses_edgar_does_not_build_cik_map(tmp_path, monkeypatch):
+    cik_map_calls = []
+    monkeypatch.setattr(markets_mod, "build_cik_map", lambda: cik_map_calls.append(1))
+    monkeypatch.setattr(
+        markets_mod, "fetch_ticker_data",
+        lambda symbol, **kw: {"symbol": symbol, "info": {}, "fetch_time": "2026-01-01", "error": None},
+    )
+
+    market = _test_market(tmp_path, fetch_universe=lambda: (["AAA"], None), valid_modes=("full",))
+    run_pipeline(market, mode="full")
+
+    assert cik_map_calls == []
+    company = json.loads((tmp_path / "companies" / "AAA.json").read_text())
+    assert company["cik"] is None
+    assert company["historical_trends"].get("source") != "edgar_xbrl"
+
+
+def test_fetch_institutional_holders_flag_populates_institutional_ownership(tmp_path, monkeypatch):
+    holders_df = pd.DataFrame([{"Holder": "Blackrock Inc.", "Shares": 100.0, "pctHeld": 0.05}])
+
+    def fake_fetch_ticker_data(symbol, *, institutional_holders=False):
+        assert institutional_holders is True
+        return {
+            "symbol": symbol,
+            "info": {"heldPercentInsiders": 0.01, "heldPercentInstitutions": 0.5},
+            "institutional_holders": holders_df,
+            "annual_income": pd.DataFrame(),
+            "annual_balance": pd.DataFrame(),
+            "annual_cashflow": pd.DataFrame(),
+            "fetch_time": "2026-01-01",
+            "error": None,
+        }
+
+    monkeypatch.setattr(markets_mod, "fetch_ticker_data", fake_fetch_ticker_data)
+
+    market = _test_market(
+        tmp_path, fetch_universe=lambda: (["AAA"], None), valid_modes=("full",),
+        fetch_institutional_holders=True,
+    )
+    run_pipeline(market, mode="full")
+
+    company = json.loads((tmp_path / "companies" / "AAA.json").read_text())
+    io = company["institutional_ownership"]
+    assert io["pct_insider"] == pytest.approx(1.0)
+    assert io["top_holders"] == [{"holder": "Blackrock Inc.", "shares": 100.0, "pct_out": pytest.approx(5.0)}]

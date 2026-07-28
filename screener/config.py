@@ -37,7 +37,7 @@ SCREENER_BASE_URL = "https://www.screener.in/company"
 SCREENER_PDF_URL = "https://www.screener.in"
 
 # Defaults
-MAX_WORKERS = 3
+MAX_WORKERS = 1  # one yfinance fetch in flight at a time (see fetch._YFINANCE_LOCK)
 RATE_LIMIT_DELAY = 1.0  # min seconds between ticker fetches (global, all threads)
 EDGAR_RATE_LIMIT = 0.12  # ~8 req/sec, under SEC's 10 req/s limit
 

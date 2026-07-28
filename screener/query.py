@@ -9,7 +9,7 @@ from .config import BUILD_DB_DB_PATH
 
 def query(sql: str, csv: bool = False, market: str | None = None) -> None:
     """Execute SQL against the screener database and print results."""
-    conn = duckdb.connect(str(BUILD_DB_DB_PATH))
+    conn = duckdb.connect(str(BUILD_DB_DB_PATH), read_only=True)
 
     # Add prefix for unqualified tables
     if market:

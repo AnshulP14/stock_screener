@@ -19,11 +19,15 @@ from .fetch import (
     fetch_nse500_tickers,
     fetch_sp500_universe,
     fetch_edgar_facts,
+    build_cik_map,
     fetch_ticker_data,
+    fetch_ownership_snapshot,
 )
 from .transform import (
     build_current_snapshot,
     build_historical_trends,
+    build_historical_trends_edgar,
+    build_institutional_ownership,
     generate_insights,
     build_company_json,
 )
