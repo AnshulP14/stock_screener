@@ -50,3 +50,47 @@ def test_nse_and_us_companies_keep_their_own_currency(tmp_path):
     by_symbol = {c["symbol"]: c for c in summary["companies"]}
     assert by_symbol["RELIANCE"]["currency"] == "INR"
     assert by_symbol["AAPL"]["currency"] == "USD"
+
+
+# ── industry_comparison write-back (Phase 6) ──────────────────────────
+
+def _write_company_with_pe(companies_dir, symbol, industry, pe):
+    companies_dir.mkdir(parents=True, exist_ok=True)
+    (companies_dir / f"{symbol}.json").write_text(json.dumps({
+        "symbol": symbol,
+        "company_name": symbol,
+        "sector": "Test",
+        "industry": industry,
+        "currency": "USD",
+        "current_snapshot": {"price_metrics": {"trailing_pe": pe}, "size": {}},
+        "historical_trends": {},
+        "industry_comparison": None,
+    }))
+
+
+def test_build_indices_writes_industry_comparison_back_onto_company_files(tmp_path):
+    companies_dir = tmp_path / "companies"
+    indices_dir = tmp_path / "indices"
+    _write_company_with_pe(companies_dir, "A", "Software", pe=10.0)
+    _write_company_with_pe(companies_dir, "B", "Software", pe=30.0)
+
+    build_indices(companies_dir=companies_dir, indices_dir=indices_dir)
+
+    a = json.loads((companies_dir / "A.json").read_text())
+    assert a["industry_comparison"]["industry"] == "Software"
+    assert a["industry_comparison"]["peer_count"] == 2
+    assert a["industry_comparison"]["metrics"]["trailing_pe"]["value"] == 10.0
+
+
+def test_build_indices_industry_comparison_populated_for_snp_too(tmp_path):
+    """Previously NSE-only per data/SCHEMA.md; both markets now get it since
+    the underlying industry_stats already exist for both."""
+    companies_dir = tmp_path / "companies"
+    indices_dir = tmp_path / "indices"
+    _write_company_with_pe(companies_dir, "AAPL", "Consumer Electronics", pe=40.0)
+
+    build_indices(companies_dir=companies_dir, indices_dir=indices_dir)
+
+    aapl = json.loads((companies_dir / "AAPL.json").read_text())
+    assert aapl["industry_comparison"] is not None
+    assert aapl["industry_comparison"]["peer_count"] == 1

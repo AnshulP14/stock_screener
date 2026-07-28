@@ -34,9 +34,7 @@ def _safe_float(v: Any) -> float | None:
 
 # ── Extractors ──────────────────────────────────────────────────────
 
-def build_current_snapshot(
-    data: dict[str, Any], metadata: dict[str, dict] | None = None, market: MarketConfig = NSE
-) -> dict:
+def build_current_snapshot(data: dict[str, Any], market: MarketConfig = NSE) -> dict:
     """Build snapshot dict from yfinance info.
 
     market defaults to NSE for backward compatibility with call sites (mostly
@@ -45,21 +43,15 @@ def build_current_snapshot(
     market explicitly. A new direct caller that forgets to pass it gets NSE's
     INR/.NS-stripping semantics silently rather than an error -- worth keeping
     in mind before adding another real (non-test) caller of this function.
+
+    Universe metadata (isin/nse_industry/gics_sector/...) is not part of the
+    snapshot -- see MarketConfig.metadata_fields and build_company_json,
+    which copy it onto the company JSON's top level instead.
     """
     info = data.get("info", {})
     symbol = data["symbol"].replace(market.ticker_suffix, "")
 
     metrics = {"symbol": symbol}
-    if metadata and f"{symbol}{market.ticker_suffix}" in metadata:
-        m = metadata[f"{symbol}{market.ticker_suffix}"]
-        metrics["nse_company_name"] = m.get("nse_company_name")
-        metrics["nse_industry"] = m.get("nse_industry")
-        metrics["isin_code"] = m.get("isin_code")
-    else:
-        metrics["nse_company_name"] = None
-        metrics["nse_industry"] = None
-        metrics["isin_code"] = None
-
     for f in (
         "trailingPE", "forwardPE", "priceToBook", "pegRatio",
         "enterpriseToEbitda", "enterpriseToRevenue", "priceToSalesTrailing12Months",
@@ -379,15 +371,24 @@ def build_company_json(
 ) -> dict:
     """Assemble the final per-company JSON."""
     info = data.get("info", {})
-    snapshot = build_current_snapshot(data, metadata, market)
+    snapshot = build_current_snapshot(data, market)
+    bare_symbol = symbol.replace(market.ticker_suffix, "")
+
+    # market.metadata_fields maps output-key -> metadata-key (see MarketConfig):
+    # NSE gets isin/nse_industry from its official CSV, SNP gets gics_sector/
+    # gics_industry from Wikipedia's table -- both fetched by fetch_universe
+    # and passed in here as `metadata`, keyed by the suffixed symbol.
+    m = (metadata or {}).get(f"{bare_symbol}{market.ticker_suffix}", {})
+    extra_fields = {out_key: m.get(meta_key) for out_key, meta_key in market.metadata_fields.items()}
 
     return {
-        "symbol": symbol.replace(market.ticker_suffix, ""),
+        "symbol": bare_symbol,
         "company_name": info.get("longName") or info.get("shortName") or "",
         "sector": info.get("sector") or "",
         "industry": info.get("industry") or "",
         "currency": market.currency,
         "cik": cik,
+        **extra_fields,
         "current_snapshot": snapshot,
         "historical_trends": historical_trends or {},
         "key_insights": generate_insights(historical_trends or {}),

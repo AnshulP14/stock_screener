@@ -26,7 +26,7 @@ Both markets share this top-level shape, but with real differences below.
 | `current_snapshot` | ✓ | ✓ (no `per_share`; has `financial_health.beta`) |
 | `historical_trends` | ✓ | ✓ (different metric set — see below) |
 | `key_insights` | ✓ (list of strings) | ✓ |
-| `industry_comparison` | ✓ (NSE-only) | — |
+| `industry_comparison` | ✓ | ✓ |
 | `shareholding` | ✓ (NSE-only) | — |
 | `credit_ratings` | ✓ (NSE-only) | — |
 | `institutional_ownership` | — | ✓ (S&P-only) |
@@ -65,11 +65,18 @@ an overlapping but non-identical metric set:
 Don't assume a field exists on both markets — check before writing code/queries that
 touch both. Zero in a historical series usually means "not reported," not zero.
 
-### NSE-only sections
+### Both-market section
 
 - **`industry_comparison`**: `industry`, `peer_count`, `metrics.{trailing_pe, forward_pe,
   price_to_book, profit_margin, operating_margin, roe, roa, debt_to_equity, ev_to_ebitda,
-  revenue_cagr_3yr, eps_cagr_3yr}`, each `{value, industry_median, percentile, vs_median}`.
+  revenue_cagr_3yr, eps_cagr_3yr}`, each `{value, industry_median, percentile, vs_median}`
+  or `null` for a metric with fewer than 2 peer values in that industry (common for S&P's
+  fine-grained GICS sub-industries — some have a single constituent). `vs_median` is a
+  relative difference (`(value - median) / abs(median)`), comparable across metrics of
+  different scale. Computed against `industry_stats.json`'s percentile bands (below).
+
+### NSE-only sections
+
 - **`shareholding`**: `updated_at`, `quarters` (list), `promoter`/`fii`/`dii`/`public`
   (parallel lists of % by quarter), `num_shareholders`, `trends` (per-holder-type
   `stable`/`increasing`/`decreasing`). Scraped from Screener.in.
@@ -85,16 +92,23 @@ touch both. Zero in a historical series usually means "not reported," not zero.
 ## Curated tier: `data/{nse,snp}/indices/`
 
 - **`screening_summary.json`**: `{generated_at, total_companies, companies: [...]}`.
-  Each company row is flat: `symbol, company_name, sector, industry, market_cap_{inr,usd},
-  trailing_pe, forward_pe, price_to_book, roe, profit_margin, debt_to_equity,
-  revenue_cagr_3yr, net_income_cagr_3yr, eps_cagr_3yr, pe_percentile, pe_vs_industry,
-  margin_percentile, margin_vs_industry, roe_percentile, roe_vs_industry, promoter_latest,
-  fii_latest, promoter_trend, fii_trend`. (`promoter_*`/`fii_*` are NSE-only fields —
-  present as keys with null values on the S&P side.) This is the `nse`/`snp` table in
-  `data/screener.db` — see `data/SQL.md`.
-- **`industry_stats.json`** (**NSE-only**): `{industry_name: {company_count, metrics:
-  {metric_name: {median, mean, std, p25, p75, min, max, count}}}}` — the percentile bands
-  `industry_comparison` in each profile is computed against. No S&P500 equivalent exists yet.
+  Each company row is flat: `symbol, company_name, sector, industry, market_cap, currency,
+  trailing_pe, forward_pe, price_to_book, roe, profit_margin, debt_to_equity, beta,
+  revenue_cagr_3yr, net_income_cagr_3yr, eps_cagr_3yr, cik, pct_insider, pct_institutional,
+  pe_percentile, forward_pe_percentile, price_to_book_percentile, margin_percentile,
+  operating_margin_percentile, roe_percentile, roa_percentile, debt_to_equity_percentile,
+  ev_to_ebitda_percentile, revenue_cagr_3yr_percentile, eps_cagr_3yr_percentile,
+  promoter_latest, promoter_trend, fii_latest, fii_trend, dii_latest, dii_trend,
+  public_latest, public_trend`. (`cik`/`pct_insider`/`pct_institutional` are S&P-only,
+  `promoter_*`/`fii_*`/`dii_*`/`public_*` are NSE-only — both present as keys with null
+  values on the other market's rows.) The schema is declared once in
+  `screener/summary.py` (`TEXT_COLUMNS`/`NUMERIC_COLUMNS`/`METRICS_FOR_PERCENTILE`). This
+  is the `nse`/`snp` table in `data/screener.db` — see `data/SQL.md`.
+- **`industry_stats.json`**: `{industry_name: {company_count, metrics: {metric_name:
+  {median, mean, std, p25, p75, min, max, count}}}}` — the percentile bands
+  `industry_comparison` in each profile is computed against. Built for both markets;
+  S&P's finer-grained GICS sub-industries mean many have `company_count: 1` and empty
+  per-metric stats (need 2+ peer values — see `screener.summary.compute_industry_stats`).
 
 Always check `generated_at` before treating the data as current — see AGENTS.md's
 Freshness note.

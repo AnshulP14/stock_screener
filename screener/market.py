@@ -10,7 +10,7 @@ for quarter-lag policies) -- markets/nse.py imports both.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from typing import Callable
@@ -58,6 +58,11 @@ class MarketConfig:
     # build_institutional_ownership) needs ticker.institutional_holders, a
     # distinct yfinance call NSE has no use for.
     fetch_institutional_holders: bool = False
+    # Phase 6: output-key -> metadata-key, read from fetch_universe's
+    # per-symbol metadata dict and copied onto the company JSON's top level
+    # by build_company_json. Differs by market because the universe sources
+    # differ (NSE's official CSV vs. Wikipedia's S&P table).
+    metadata_fields: dict[str, str] = field(default_factory=dict)
 
 
 def _nse_fiscal_year(d: date) -> int:
@@ -78,9 +83,10 @@ def _nse_universe() -> tuple[list[str], dict[str, dict]]:
     return symbols, metadata
 
 
-def _snp_universe() -> tuple[list[str], None]:
+def _snp_universe() -> tuple[list[str], dict[str, dict]]:
     companies = fetch_sp500_universe()
-    return [c["symbol"] for c in companies], None
+    metadata = {c["symbol"]: c for c in companies}
+    return [c["symbol"] for c in companies], metadata
 
 
 _NSE_QUARTER_POLICY = QuarterLag(field=("shareholding", "quarters", -1), market=MarketId.NSE)
@@ -109,6 +115,7 @@ NSE = MarketConfig(
     fetch_label="stocks",
     enrichment_datasets=("shareholding", "credit_ratings"),
     raw_csv_dir=RAW_DIR / "nse",
+    metadata_fields={"isin": "isin_code", "nse_industry": "nse_industry"},
 )
 
 SNP = MarketConfig(
@@ -125,4 +132,5 @@ SNP = MarketConfig(
     staleness_policies=_snp_staleness_policies,
     uses_edgar=True,
     fetch_institutional_holders=True,
+    metadata_fields={"gics_sector": "gics_sector", "gics_industry": "gics_industry"},
 )

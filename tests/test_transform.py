@@ -13,7 +13,7 @@ above), but snp.py now passes market=SNP explicitly.
 import pandas as pd
 import pytest
 
-from screener.market import SNP
+from screener.market import NSE, SNP
 from screener.transform import (
     build_company_json,
     build_current_snapshot,
@@ -94,6 +94,33 @@ def test_company_json_carries_through_cik_and_institutional_ownership():
     company = build_company_json("AAPL", data, market=SNP, cik=320193, institutional_ownership=io)
     assert company["cik"] == 320193
     assert company["institutional_ownership"] == io
+
+
+# ── MarketConfig.metadata_fields (isin/nse_industry/gics_sector/gics_industry) ──
+
+def test_nse_company_json_gets_isin_and_nse_industry_from_metadata():
+    data = {"symbol": "RELIANCE.NS", "info": {}, "fetch_time": "2026-01-01", "error": None}
+    metadata = {"RELIANCE.NS": {"isin_code": "INE002A01018", "nse_industry": "Oil & Gas"}}
+    company = build_company_json("RELIANCE.NS", data, metadata=metadata, market=NSE)
+    assert company["isin"] == "INE002A01018"
+    assert company["nse_industry"] == "Oil & Gas"
+    assert "gics_sector" not in company
+
+
+def test_snp_company_json_gets_gics_sector_and_industry_from_metadata():
+    data = {"symbol": "AAPL", "info": {}, "fetch_time": "2026-01-01", "error": None}
+    metadata = {"AAPL": {"gics_sector": "Information Technology", "gics_industry": "Technology Hardware"}}
+    company = build_company_json("AAPL", data, metadata=metadata, market=SNP)
+    assert company["gics_sector"] == "Information Technology"
+    assert company["gics_industry"] == "Technology Hardware"
+    assert "isin" not in company
+
+
+def test_metadata_fields_default_to_none_when_symbol_missing_from_metadata():
+    data = {"symbol": "RELIANCE.NS", "info": {}, "fetch_time": "2026-01-01", "error": None}
+    company = build_company_json("RELIANCE.NS", data, metadata=None, market=NSE)
+    assert company["isin"] is None
+    assert company["nse_industry"] is None
 
 
 # ── build_historical_trends_edgar ────────────────────────────────────

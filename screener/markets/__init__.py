@@ -180,7 +180,7 @@ def _fetch_and_save(
             json.dump(company, f, indent=2)
         tmp.replace(companies_dir / f"{sym}.json")  # atomic: no torn files
         trends["symbol"] = sym
-        return {"snapshot": build_current_snapshot(raw, metadata, market), "trends": trends}
+        return {"snapshot": build_current_snapshot(raw, market), "trends": trends}
 
     report = run_fetch_pipeline(
         symbols,
