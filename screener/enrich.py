@@ -26,17 +26,21 @@ def _get_session() -> requests.Session:
     return s
 
 
-def _fetch_soup(symbol: str, session: requests.Session | None = None) -> BeautifulSoup | None:
+def _fetch_soup(
+    symbol: str, session: requests.Session | None = None
+) -> tuple[BeautifulSoup | None, list[int | None]]:
     getter = session or requests
+    statuses: list[int | None] = []
     for view in ("consolidated", ""):
         url = f"https://www.screener.in/company/{symbol}/{view}/"
         try:
             resp = getter.get(url, timeout=20)
+            statuses.append(resp.status_code)
             if resp.status_code == 200:
-                return BeautifulSoup(resp.text, "html.parser")
+                return BeautifulSoup(resp.text, "html.parser"), statuses
         except requests.RequestException:
-            pass
-    return None
+            statuses.append(None)
+    return None, statuses
 
 
 def _load_company(symbol: str) -> dict:
@@ -208,7 +212,7 @@ def get_stale_symbols(dataset: str) -> list[str]:
 def process_symbols(symbols: list[str], dataset: str, *, force: bool = False, log_fn=print) -> tuple[int, int, int]:
     key, parse_fn, is_stale = DATASETS[dataset]
     session = _get_session()
-    ok = skipped = failed = 0
+    ok = skipped = failed = rate_limited = 0
 
     for sym in symbols:
         company = _load_company(sym)
@@ -216,16 +220,23 @@ def process_symbols(symbols: list[str], dataset: str, *, force: bool = False, lo
             skipped += 1
             continue
 
-        soup = _fetch_soup(sym, session)
+        soup, statuses = _fetch_soup(sym, session)
+        time.sleep(RATE_LIMIT_DELAY)
         result = parse_fn(soup) if soup else None
         if result is None:
             failed += 1
+            if 429 in statuses:
+                rate_limited += 1
+                log_fn(f"  {sym}: rate-limited (429) by Screener.in")
+            else:
+                log_fn(f"  {sym}: fetch failed (status={statuses})")
         else:
             company[key] = result
             _save_company(sym, company)
             ok += 1
 
         if len(symbols) > 25 and len(symbols) % 25 == 0:
-            log_fn(f"  [{ok + skipped + failed}/{len(symbols)}] {ok} ok  {skipped} skipped  {failed} failed")
+            suffix = f"  ({rate_limited} rate-limited)" if rate_limited else ""
+            log_fn(f"  [{ok + skipped + failed}/{len(symbols)}] {ok} ok  {skipped} skipped  {failed} failed{suffix}")
 
     return ok, skipped, failed

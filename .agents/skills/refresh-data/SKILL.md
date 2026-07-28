@@ -20,12 +20,12 @@ python scripts/data_refresh.py --mode full
 
 # Single market
 python scripts/data_refresh.py --market nse --mode full      # NSE bootstrap, ~60-90 min
-python scripts/data_refresh.py --market us --mode full       # S&P500 bootstrap, varies (EDGAR throttled)
+python scripts/data_refresh.py --market snp --mode full      # S&P500 bootstrap, varies (EDGAR throttled)
 python scripts/data_refresh.py --market nse --mode quick     # NSE top-50, ~5 min
 python scripts/data_refresh.py --market nse --mode sync-universe  # NSE index rebalance
-python scripts/data_refresh.py --market us --mode rebuild    # S&P500 indices only
+python scripts/data_refresh.py --market snp --mode rebuild   # S&P500 indices only
 python scripts/data_refresh.py --market nse --symbols RELIANCE TCS  # Specific stocks
-python scripts/data_refresh.py --market us --dry-run         # Preview only
+python scripts/data_refresh.py --market snp --dry-run        # Preview only
 ```
 
 ### Modes (per market)

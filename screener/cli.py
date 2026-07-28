@@ -4,7 +4,7 @@ Unified data refresh CLI — one command for US and India markets.
 Usage:
     python scripts/cli.py                          # Both markets, incremental
     python scripts/cli.py --market nse --mode full # NSE500 full
-    python scripts/cli.py --market us --mode full  # S&P 500 full
+    python scripts/cli.py --market snp --mode full # S&P 500 full
     python scripts/cli.py --market nse --mode quick # Top 50 NSE500
     python scripts/cli.py --market nse --symbols RELIANCE TCS
     python scripts/cli.py --dry-run                # Preview only
@@ -16,7 +16,7 @@ import sys
 import time
 
 from screener.markets import nse as nse_market
-from screener.markets import us as us_market
+from screener.markets import snp as snp_market
 
 
 def main() -> None:
@@ -28,7 +28,7 @@ def main() -> None:
 
     parser.add_argument(
         "--market",
-        choices=["nse", "us", "all"],
+        choices=["nse", "snp", "all"],
         default="all",
         help="Which market to refresh (default: all)",
     )
@@ -49,7 +49,7 @@ def main() -> None:
         type=int,
         default=7,
         metavar="N",
-        help="Incremental threshold: re-fetch data older than N days (NSE500 only, default: 7)",
+        help="Incremental threshold: re-fetch data older than N days (default: 7)",
     )
     parser.add_argument(
         "--workers",
@@ -74,8 +74,8 @@ def main() -> None:
     markets = []
     if args.market in ("nse", "all"):
         markets.append(("NSE500", nse_market.run))
-    if args.market in ("us", "all"):
-        markets.append(("S&P 500", us_market.run))
+    if args.market in ("snp", "all"):
+        markets.append(("S&P 500", snp_market.run))
 
     if not markets:
         print("Nothing to do.", file=sys.stderr)
@@ -99,9 +99,9 @@ def main() -> None:
             "symbols": args.symbols,
             "workers": args.workers,
             "dry_run": args.dry_run,
+            "days_old": args.days_old,
         }
         if label == "NSE500":
-            kwargs["days_old"] = args.days_old
             kwargs["no_transform"] = args.no_transform
 
         print(f"\n{'─' * 60}")

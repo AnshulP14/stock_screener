@@ -101,9 +101,11 @@ Ratios/margins are decimals (`roe = 0.15` → 15%); shareholding percentages are
 numbers (`promoter_latest = 52.3` → 52.3%). NSE fiscal years end March 31; US fiscal
 years vary.
 
-NSE uses `market_cap_inr` + shareholding (promoter/FII/DII); S&P uses `market_cap_usd`
-+ institutional/insider %. S&P has `beta`; NSE has `net_income_cagr_3yr` and
-`ev_to_ebitda` percentiles — don't compare raw market-cap/size values across markets.
+Both markets share one `market_cap` column (unsuffixed) — check `currency` ("INR" or
+"USD") before comparing across markets, since raw market-cap/size values are never
+directly comparable between them regardless. NSE additionally has shareholding
+(promoter/FII/DII); S&P has institutional/insider % instead. S&P has `beta`; NSE has
+`net_income_cagr_3yr` and `ev_to_ebitda` percentiles.
 All core screening columns (`trailing_pe`, `roe`, `profit_margin`, `price_to_book`,
 `revenue_cagr_3yr`, `eps_cagr_3yr`) are identical across both markets.
 

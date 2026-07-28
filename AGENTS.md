@@ -87,8 +87,10 @@ scripts/
 (classifiers, staleness rules, DB rebuild helpers), not network calls.
 
 **Units:** ratios and margins are decimals (0.15 = 15%); shareholding percentages are
-whole numbers (52.3 = 52.3%). Market cap / revenue are absolute INR (`*_inr`) or USD
-(`*_usd`). NSE fiscal years end March 31; US fiscal years vary by company.
+whole numbers (52.3 = 52.3%). Market cap / revenue (`market_cap`, `enterprise_value`,
+`total_revenue`) are absolute currency, one unsuffixed field for both markets — check
+the top-level `currency` field ("INR" or "USD") to know which. NSE fiscal years end
+March 31; US fiscal years vary by company.
 
 **Freshness:** check `data/manifest.json` first — one file, per-market `generated_at`,
 `total_companies`, and enrichment coverage (e.g. `shareholding_coverage`,
@@ -113,15 +115,15 @@ WHERE trailing_pe < 15 AND roe > 0.15 ORDER BY roe DESC LIMIT 20;
 python scripts/build_db.py --market all                 # rebuild data/screener.db from JSON, no re-fetch
 python scripts/data_refresh.py                          # Both markets, incremental
 python scripts/data_refresh.py --market nse --mode full # NSE full bootstrap (~60-90 min)
-python scripts/data_refresh.py --market us --mode full  # S&P500 full bootstrap
+python scripts/data_refresh.py --market snp --mode full # S&P500 full bootstrap
 python scripts/data_refresh.py --market nse --symbols RELIANCE TCS  # Specific stocks
-python scripts/data_refresh.py --market us --dry-run           # Preview only
+python scripts/data_refresh.py --market snp --dry-run          # Preview only
 ```
 
 ## Fresh clone (no data/)
 
 Bootstrap: `python scripts/data_refresh.py --mode full` (both markets) or pick one
-with `--market nse/us`. The NSE500 quick start —
+with `--market nse/snp`. The NSE500 quick start —
 `python scripts/data_refresh.py --market nse --mode quick`
 (top 50 stocks, ~5 min) is a fast partial start. Shareholding/credit-rating enrichment
 scrapes Screener.in and may partially fail — the core dataset is still usable; a later

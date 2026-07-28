@@ -42,7 +42,8 @@ Run `DESCRIBE {table}` to see exact columns — flat tables have ~40+ columns
 
 **Units unchanged from the JSON:** ratios/margins are decimals (`roe = 0.15` → 15%);
 shareholding percentages are whole numbers (`promoter_latest = 52.3` → 52.3%);
-market cap is absolute (`market_cap_inr` / `market_cap_usd`).
+market cap is absolute (`market_cap`, one unsuffixed column for both markets —
+check `currency` for INR vs USD).
 
 ## Example queries
 

@@ -13,6 +13,7 @@ history near an IPO).
 import pandas as pd
 import pytest
 
+from screener.market import NSE, SNP
 from screener.statements import AnnualLineItems, AnnualStatements
 
 FY_ENDS = [pd.Timestamp("2022-03-31"), pd.Timestamp("2023-03-31"), pd.Timestamp("2024-03-31")]
@@ -76,7 +77,7 @@ def test_from_yfinance_reads_matching_years_across_all_three_statements():
         FY_ENDS[2]: {"Free Cash Flow": 70.0},
     })
 
-    stmts = AnnualStatements.from_yfinance(income, balance, cashflow)
+    stmts = AnnualStatements.from_yfinance(income, balance, cashflow, NSE.fiscal_year)
 
     assert stmts.years == [2022, 2023, 2024]
     assert stmts.revenue == [1000.0, 1000.0, 1000.0]
@@ -100,7 +101,7 @@ def test_from_yfinance_aligns_by_fiscal_year_not_position():
     })
     cashflow = pd.DataFrame()
 
-    stmts = AnnualStatements.from_yfinance(income, balance, cashflow)
+    stmts = AnnualStatements.from_yfinance(income, balance, cashflow, NSE.fiscal_year)
 
     # years_available stays anchored to the income statement...
     assert stmts.years == [2022, 2023, 2024]
@@ -116,12 +117,29 @@ def test_from_yfinance_missing_label_entirely_is_all_none():
     balance = pd.DataFrame()  # no balance sheet data at all
     cashflow = pd.DataFrame()
 
-    stmts = AnnualStatements.from_yfinance(income, balance, cashflow)
+    stmts = AnnualStatements.from_yfinance(income, balance, cashflow, NSE.fiscal_year)
 
     assert stmts.total_debt == [None, None, None]
     assert stmts.stockholders_equity == [None, None, None]
 
 
 def test_from_yfinance_empty_income_gives_no_years():
-    stmts = AnnualStatements.from_yfinance(pd.DataFrame(), pd.DataFrame(), pd.DataFrame())
+    stmts = AnnualStatements.from_yfinance(pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), NSE.fiscal_year)
     assert stmts.years == []
+
+
+# ── from_yfinance: fiscal_year_fn is market-specific, not hardcoded ──
+
+def test_us_fiscal_year_uses_calendar_year_of_period_end_not_nse_apr_mar_rule():
+    # A Sept 30 period-end: NSE's Apr-Mar rule would label this the *next*
+    # calendar year (month >= 4 -> year+1); US convention labels it by the
+    # year the period actually ends in, with no adjustment.
+    income = pd.DataFrame({
+        pd.Timestamp("2023-09-30"): {"Total Revenue": 100.0},
+        pd.Timestamp("2024-09-30"): {"Total Revenue": 110.0},
+    })
+    nse_stmts = AnnualStatements.from_yfinance(income, pd.DataFrame(), pd.DataFrame(), NSE.fiscal_year)
+    snp_stmts = AnnualStatements.from_yfinance(income, pd.DataFrame(), pd.DataFrame(), SNP.fiscal_year)
+
+    assert nse_stmts.years == [2024, 2025]  # Sept >= month 4 -> year+1 under NSE's rule
+    assert snp_stmts.years == [2023, 2024]   # calendar year of period-end, unadjusted

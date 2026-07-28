@@ -7,7 +7,7 @@ def test_screener_package_imports():
 
 
 def test_market_pipelines_import():
-    from screener.markets import nse, us  # noqa: F401
+    from screener.markets import nse, snp  # noqa: F401
 
 
 def test_cli_entry_points_import():

@@ -8,6 +8,7 @@ from typing import Any
 
 import pandas as pd
 
+from .market import NSE, MarketConfig
 from .statements import AnnualStatements
 from .trends import (
     average_roe,
@@ -33,14 +34,24 @@ def _safe_float(v: Any) -> float | None:
 
 # ── Extractors ──────────────────────────────────────────────────────
 
-def build_current_snapshot(data: dict[str, Any], nse_metadata: dict[str, dict] | None = None) -> dict:
-    """Build snapshot dict from yfinance info."""
+def build_current_snapshot(
+    data: dict[str, Any], metadata: dict[str, dict] | None = None, market: MarketConfig = NSE
+) -> dict:
+    """Build snapshot dict from yfinance info.
+
+    market defaults to NSE for backward compatibility with call sites (mostly
+    tests) that predate MarketConfig and never cared about market-specific
+    behavior. Every production call site (screener.markets.run_pipeline) passes
+    market explicitly. A new direct caller that forgets to pass it gets NSE's
+    INR/.NS-stripping semantics silently rather than an error -- worth keeping
+    in mind before adding another real (non-test) caller of this function.
+    """
     info = data.get("info", {})
-    symbol = data["symbol"].replace(".NS", "")
+    symbol = data["symbol"].replace(market.ticker_suffix, "")
 
     metrics = {"symbol": symbol}
-    if nse_metadata and f"{symbol}.NS" in nse_metadata:
-        m = nse_metadata[f"{symbol}.NS"]
+    if metadata and f"{symbol}{market.ticker_suffix}" in metadata:
+        m = metadata[f"{symbol}{market.ticker_suffix}"]
         metrics["nse_company_name"] = m.get("nse_company_name")
         metrics["nse_industry"] = m.get("nse_industry")
         metrics["isin_code"] = m.get("isin_code")
@@ -96,9 +107,9 @@ def build_current_snapshot(data: dict[str, Any], nse_metadata: dict[str, dict] |
             "beta": _safe_float(metrics.get("beta")),
         },
         "size": {
-            "market_cap_inr": _safe_float(metrics.get("marketCap")),
-            "enterprise_value_inr": _safe_float(metrics.get("enterpriseValue")),
-            "total_revenue_inr": _safe_float(metrics.get("totalRevenue")),
+            "market_cap": _safe_float(metrics.get("marketCap")),
+            "enterprise_value": _safe_float(metrics.get("enterpriseValue")),
+            "total_revenue": _safe_float(metrics.get("totalRevenue")),
             "employees": _safe_float(metrics.get("fullTimeEmployees")),
         },
         "dividends": {
@@ -122,15 +133,16 @@ def build_current_snapshot(data: dict[str, Any], nse_metadata: dict[str, dict] |
 
 # ── Trend computation ───────────────────────────────────────────────
 
-def build_historical_trends(data: dict[str, Any]) -> dict[str, Any]:
+def build_historical_trends(data: dict[str, Any], market: MarketConfig = NSE) -> dict[str, Any]:
     """Compute revenue, EPS, margin, ROE, debt trends from annual data."""
     info = data.get("info", {})
-    symbol = data["symbol"].replace(".NS", "")
+    symbol = data["symbol"].replace(market.ticker_suffix, "")
 
     statements = AnnualStatements.from_yfinance(
         data.get("annual_income", pd.DataFrame()),
         data.get("annual_balance", pd.DataFrame()),
         data.get("annual_cashflow", pd.DataFrame()),
+        market.fiscal_year,
     )
 
     # Inherit sector/industry from info
@@ -165,13 +177,13 @@ def build_historical_trends(data: dict[str, Any]) -> dict[str, Any]:
         "source": "yfinance",
         "years_available": years,
         "revenue": {
-            "values_inr": rev_vals,
+            "values": rev_vals,
             "yoy_growth": yoy(rev_vals),
             "cagr_3yr": cagr(rev),
             "trend": classify_growth(rev_vals),
         },
         "net_income": {
-            "values_inr": ni_vals,
+            "values": ni_vals,
             "cagr_3yr": cagr(ni),
             "trend": classify_growth(ni_vals),
         },
@@ -181,7 +193,7 @@ def build_historical_trends(data: dict[str, Any]) -> dict[str, Any]:
             "trend": classify_growth(eps_vals),
         },
         "gross_profit": {
-            "values_inr": gross_vals,
+            "values": gross_vals,
             "trend": classify_growth(gross_vals),
         },
         "operating_margin": {
@@ -197,7 +209,7 @@ def build_historical_trends(data: dict[str, Any]) -> dict[str, Any]:
             "trend": classify_leverage(debt_to_equity_values),
         },
         "free_cash_flow": {
-            "values_inr": cf_vals,
+            "values": cf_vals,
             "positive_years": sum(1 for v in cf_vals if _safe_float(v) and v > 0),
             "trend": classify_growth(cf_vals),
         },
@@ -254,22 +266,23 @@ def generate_insights(trends: dict[str, Any]) -> list[str]:
 def build_company_json(
     symbol: str,
     data: dict[str, Any],
-    nse_metadata: dict[str, dict] | None = None,
+    metadata: dict[str, dict] | None = None,
     historical_trends: dict[str, Any] | None = None,
     industry_comparison: dict[str, Any] | None = None,
     shareholding: dict | None = None,
     credit_ratings: dict | None = None,
+    market: MarketConfig = NSE,
 ) -> dict:
     """Assemble the final per-company JSON."""
     info = data.get("info", {})
-    snapshot = build_current_snapshot(data, nse_metadata)
+    snapshot = build_current_snapshot(data, metadata, market)
 
     return {
-        "symbol": symbol.replace(".NS", ""),
+        "symbol": symbol.replace(market.ticker_suffix, ""),
         "company_name": info.get("longName") or info.get("shortName") or "",
         "sector": info.get("sector") or "",
         "industry": info.get("industry") or "",
-        "currency": "INR",
+        "currency": market.currency,
         "cik": None,
         "current_snapshot": snapshot,
         "historical_trends": historical_trends or {},

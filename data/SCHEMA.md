@@ -9,8 +9,9 @@ Reference for the shapes under `data/`. Two tiers: **curated** (`data/nse/`,
 
 - Ratios and margins are decimals: `0.15` = 15%. Percentiles (`*_percentile`) and
   shareholding fields are whole numbers: `52.3` = 52.3%.
-- Market cap / revenue / enterprise value are absolute currency: `*_inr` (NSE) or
-  `*_usd` (S&P500).
+- Market cap / revenue / enterprise value (`market_cap`, `enterprise_value`,
+  `total_revenue`) are absolute currency, one unsuffixed field for both markets —
+  check the top-level `currency` field ("INR" or "USD") to know which.
 - NSE fiscal years end March 31; S&P500 fiscal years vary by company (EDGAR's own `fy`/`fp`).
 
 ## Curated tier: `data/{nse,snp}/companies/{SYMBOL}.json`
@@ -19,9 +20,9 @@ Both markets share this top-level shape, but with real differences below.
 
 | Field | NSE | S&P500 |
 |---|---|---|
-| `symbol`, `company_name`, `sector`, `industry` | ✓ | ✓ |
+| `symbol`, `company_name`, `sector`, `industry`, `currency` | ✓ | ✓ |
 | `isin` / `nse_industry` | ✓ (NSE-only) | — |
-| `gics_sector`, `gics_industry`, `currency`, `cik` | — | ✓ (S&P-only; `cik` links to `data/raw/snp/edgar_cache/{SYMBOL}.json`) |
+| `gics_sector`, `gics_industry`, `cik` | — | ✓ (S&P-only; `cik` links to `data/raw/snp/edgar_cache/{SYMBOL}.json`) |
 | `current_snapshot` | ✓ | ✓ (no `per_share`; has `financial_health.beta`) |
 | `historical_trends` | ✓ | ✓ (different metric set — see below) |
 | `key_insights` | ✓ (list of strings) | ✓ |
@@ -39,8 +40,8 @@ price_metrics:  trailing_pe, forward_pe, price_to_book, peg_ratio, price_to_sale
 profitability:  profit_margin, gross_margin, operating_margin, ebitda_margin,
                 return_on_equity, return_on_assets
 financial_health: debt_to_equity, current_ratio, quick_ratio [+ beta, S&P only]
-size:           market_cap_{inr,usd}, enterprise_value_{inr,usd},
-                total_revenue_{inr,usd}, employees
+size:           market_cap, enterprise_value, total_revenue, employees
+                # absolute currency -- see top-level `currency` field
 per_share:      trailing_eps, forward_eps, book_value, revenue_per_share   # NSE only
 dividends:      dividend_rate, dividend_yield, payout_ratio
 growth:         revenue_growth, earnings_growth, earnings_quarterly_growth
@@ -53,10 +54,10 @@ an overlapping but non-identical metric set:
 
 | Metric | NSE | S&P500 |
 |---|---|---|
-| `revenue`, `net_income`, `eps` | ✓ (`values_inr`/`values`, `yoy_growth`, `cagr_3yr`, `trend`) | ✓ (`values_usd`/`values`, `cagr_3yr`, `trend`; no `yoy_growth`) |
+| `revenue`, `net_income`, `eps` | ✓ (`values`, `yoy_growth`, `cagr_3yr`, `trend`) | ✓ (`values`, `cagr_3yr`, `trend`; no `yoy_growth`) |
 | `operating_margin` | ✓ (`values`, `direction`, `change_3yr`) | ✓ (`values` only) |
 | `roe` | ✓ (`values`, `direction`, `avg_3yr`) | — |
-| `free_cash_flow` | ✓ (`values_inr`, `trend`, `fcf_positive_years`) | — |
+| `free_cash_flow` | ✓ (`values`, `trend`, `fcf_positive_years`) | — |
 | `debt_to_equity` | ✓ (`values`, `trend`) | — |
 | `gross_profit` | — | ✓ (`values_usd`) |
 | `operating_cash_flow` | — | ✓ (`values_usd`, `positive_years`, `trend`) |

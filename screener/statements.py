@@ -15,6 +15,7 @@ year rather than shifting every later value by one position.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable
 
 import pandas as pd
 
@@ -29,16 +30,16 @@ def _safe_float(v) -> float | None:
         return None
 
 
-def _process_annual_statement(df: pd.DataFrame) -> pd.DataFrame:
+def _process_annual_statement(
+    df: pd.DataFrame, fiscal_year_fn: Callable[[pd.Timestamp], int]
+) -> pd.DataFrame:
     """Transpose annual statement, collapse columns to fiscal years."""
     if df is None or df.empty:
         return pd.DataFrame()
     try:
         transposed = df.T.copy()
         transposed.index = pd.to_datetime(transposed.index)
-        transposed["fiscal_year"] = transposed.index.to_series().apply(
-            lambda t: t.year + 1 if t.month >= 4 else t.year
-        )
+        transposed["fiscal_year"] = transposed.index.to_series().apply(fiscal_year_fn)
         return transposed.groupby("fiscal_year").last().T
     except Exception:
         return pd.DataFrame()
@@ -121,14 +122,25 @@ class AnnualStatements:
 
     @classmethod
     def from_yfinance(
-        cls, income: pd.DataFrame, balance: pd.DataFrame, cashflow: pd.DataFrame
+        cls,
+        income: pd.DataFrame,
+        balance: pd.DataFrame,
+        cashflow: pd.DataFrame,
+        fiscal_year_fn: Callable[[pd.Timestamp], int],
     ) -> "AnnualStatements":
         """years_available stays anchored to the income statement's fiscal
         years (matching the pre-existing contract); balance/cashflow are
-        looked up per-year against that anchor, not zipped positionally."""
-        income = _process_annual_statement(income)
-        balance = _process_annual_statement(balance)
-        cashflow = _process_annual_statement(cashflow)
+        looked up per-year against that anchor, not zipped positionally.
+
+        fiscal_year_fn has no default -- the pre-unification code hardcoded
+        NSE's Apr-Mar rule regardless of market, which would have mislabeled
+        every US company's years_available once real S&P data existed
+        (US fiscal years are labeled by the calendar year they end in, no
+        adjustment). Callers must be explicit about which market's rule
+        applies; see MarketConfig.fiscal_year in screener.market."""
+        income = _process_annual_statement(income, fiscal_year_fn)
+        balance = _process_annual_statement(balance, fiscal_year_fn)
+        cashflow = _process_annual_statement(cashflow, fiscal_year_fn)
         sources = {"income": income, "balance": balance, "cashflow": cashflow}
 
         by_year = {}

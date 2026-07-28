@@ -20,7 +20,7 @@ _SENTINEL = object()
 
 class Market(StrEnum):
     NSE = "nse"
-    US = "us"
+    SNP = "snp"
 
 
 @dataclass(frozen=True)
