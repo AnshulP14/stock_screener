@@ -3,6 +3,7 @@
 import io
 import json
 import math
+import os
 import threading
 import time
 from datetime import date
@@ -47,7 +48,17 @@ def _df_or_empty(df: pd.DataFrame | None) -> pd.DataFrame:
 
 
 def _edgar_ua() -> str:
-    """Build User-Agent for SEC EDGAR, reading contact email if available."""
+    """Build User-Agent for SEC EDGAR, reading contact email if available.
+
+    $SEC_EDGAR_CONTACT takes priority (the more conventional, discoverable
+    mechanism -- e.g. for CI) over the ~/.screener_edgar_email dotfile
+    (EDGAR_CONTACT_FILE), which exists mainly so a long-lived dev machine only
+    has to set it once. Neither being set isn't an error -- SEC just gets a
+    generic browser UA instead of a proper contact, which is worse but not fatal.
+    """
+    contact = os.environ.get("SEC_EDGAR_CONTACT")
+    if contact:
+        return f"sp500-screener-bot ({contact})"
     if EDGAR_CONTACT_FILE.exists():
         return f"sp500-screener-bot ({EDGAR_CONTACT_FILE.read_text().strip()})"
     return YFINANCE_USER_AGENT
@@ -171,9 +182,6 @@ def _empty_result(symbol: str, error: str | None) -> dict[str, Any]:
     return {
         "symbol": symbol,
         "info": {},
-        "quarterly_income": pd.DataFrame(),
-        "quarterly_balance": pd.DataFrame(),
-        "quarterly_cashflow": pd.DataFrame(),
         "annual_income": pd.DataFrame(),
         "annual_balance": pd.DataFrame(),
         "annual_cashflow": pd.DataFrame(),
@@ -183,7 +191,9 @@ def _empty_result(symbol: str, error: str | None) -> dict[str, Any]:
     }
 
 
-def fetch_ticker_data(symbol: str, *, institutional_holders: bool = False) -> dict[str, Any]:
+def fetch_ticker_data(
+    symbol: str, *, institutional_holders: bool = False, annual_statements: bool = True
+) -> dict[str, Any]:
     """Fetch all fundamentals for a single symbol via yfinance.
 
     Never raises — failures come back as a populated "error" key so callers can
@@ -192,6 +202,13 @@ def fetch_ticker_data(symbol: str, *, institutional_holders: bool = False) -> di
     institutional_holders: also fetch ticker.institutional_holders (S&P-only;
     see MarketConfig.fetch_institutional_holders) -- skipped by default since
     NSE has no use for it and it's a distinct network call.
+
+    annual_statements: fetch ticker.income_stmt/balance_sheet/cashflow. Markets
+    whose historical_trends come from SEC EDGAR instead (MarketConfig.uses_edgar
+    -- S&P since Phase 5) have no use for these; skipping them there saves 3
+    yfinance calls per company. Quarterly statements were fetched here too until
+    Phase 7's doc reconciliation found nothing, for either market, ever read
+    them -- removed rather than kept as an unused, undocumented-as-dead fetch.
     """
     try:
         with _YFINANCE_LOCK:
@@ -203,12 +220,9 @@ def fetch_ticker_data(symbol: str, *, institutional_holders: bool = False) -> di
             return {
                 "symbol": symbol,
                 "info": info,
-                "quarterly_income": _df_or_empty(ticker.quarterly_income_stmt),
-                "quarterly_balance": _df_or_empty(ticker.quarterly_balance_sheet),
-                "quarterly_cashflow": _df_or_empty(ticker.quarterly_cashflow),
-                "annual_income": _df_or_empty(ticker.income_stmt),
-                "annual_balance": _df_or_empty(ticker.balance_sheet),
-                "annual_cashflow": _df_or_empty(ticker.cashflow),
+                "annual_income": _df_or_empty(ticker.income_stmt) if annual_statements else pd.DataFrame(),
+                "annual_balance": _df_or_empty(ticker.balance_sheet) if annual_statements else pd.DataFrame(),
+                "annual_cashflow": _df_or_empty(ticker.cashflow) if annual_statements else pd.DataFrame(),
                 "institutional_holders": (
                     _df_or_empty(ticker.institutional_holders) if institutional_holders else pd.DataFrame()
                 ),

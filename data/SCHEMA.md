@@ -123,9 +123,6 @@ be loaded into context wholesale.
 
 - `current_metrics.csv`, `historical_annual.csv` — the flat tabular inputs the curated
   NSE JSONs are built from (~40 statement line items per company-year in the annual file).
-- `quarterly_raw.json` — `{"{SYMBOL}.NS": {"info": {...full yfinance info blob...}}}`
-  for all 311 currently-fetched NSE symbols. Business summaries, addresses, and other
-  yfinance fields not retained in the curated profile.
 - `annual_reports/{SYMBOL}/` — scraped Screener.in annual report PDFs.
 - `failed_tickers.txt` — symbols that failed the last fetch; retry with `--symbols`.
 

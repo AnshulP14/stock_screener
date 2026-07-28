@@ -36,7 +36,9 @@ reconcile and no risk of a query silently mixing INR and USD figures.
 | `nse_industry_stats`, `snp_industry_stats` | `{market}/indices/industry_stats.json` | one row per industry — percentile bands (median/mean/std/p25/p75/min/max) |
 
 Run `DESCRIBE {table}` to see exact columns — flat tables have ~40+ columns
-(percentiles/vs_industry for every metric), and nested tables mirror
+(a `<metric>_percentile` for every metric in `screener.summary.METRICS_FOR_PERCENTILE`;
+the median/vs-median comparison itself is nested per-company, not a flat column --
+see `industry_comparison` in `data/SCHEMA.md`), and nested tables mirror
 `data/SCHEMA.md`'s per-company shape exactly (`current_snapshot.profitability.*`,
 `historical_trends.*`, `shareholding.*`, etc.).
 
@@ -83,8 +85,9 @@ ORDER BY company_count DESC LIMIT 10;
 
 ## Maintenance
 
-- The DB is **not** rebuilt automatically by the fetch/transform pipeline (`core.index.build_indices`,
-  called from `markets/nse.py` and `markets/us.py`) — only `core.index.rebuild_market_db`
+- The DB is **not** rebuilt automatically by the fetch/transform pipeline
+  (`screener.index.build_indices`, called from the shared `run_pipeline` in
+  `screener/markets/__init__.py`) — only `screener.index.rebuild_market_db`
   (via `python3 scripts/build_db.py`) touches `screener.db`.
 - A single-market run only rebuilds that market's three tables
   (`CREATE OR REPLACE TABLE {market}...`) — the other market's tables are

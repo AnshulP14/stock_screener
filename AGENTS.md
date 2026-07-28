@@ -9,7 +9,8 @@ This repo has no application. You (the agent) are the application. It provides:
    query surface; there's no CLI.
 3. **`screener/`** — the pipeline package (shared utilities + NSE/S&P500 orchestration).
    **`scripts/`** — thin CLI wrappers over it; commands below are unaffected by that split.
-4. **Skills** — `screen-stocks` (how to query + strategy recipes), `refresh-data` (when/how to update).
+4. **Skills** — `screen-stocks` (how to query + strategy recipes), `refresh-data`
+   (first-time setup/bootstrap and when/how to update).
 
 ## Data map
 
@@ -31,7 +32,6 @@ data/
     ├── nse/
     │   ├── current_metrics.csv     # raw fetch output (inputs to the curated JSONs)
     │   ├── historical_annual.csv
-    │   ├── quarterly_raw.json      # full yfinance payloads per symbol
     │   ├── annual_reports/         # scraped Screener.in PDFs
     │   └── failed_tickers.txt
     └── snp/
@@ -62,17 +62,25 @@ interface doesn't change when the package internals do.
 ```
 screener/
 ├── config.py            # Paths, URLs, rate limits, staleness thresholds
+├── market.py             # MarketConfig -- the per-market value object (currency,
+│                         #   fiscal-year rule, uses_edgar, enrichment_datasets, ...)
+├── freshness.py          # Staleness policies (QuarterLag/AgeDays) + is_stale
+├── trends.py             # TrendVerdict classifiers (GrowthTrend/MarginDirection/LeverageBand)
+├── statements.py         # AnnualStatements -- from_yfinance (NSE) / from_edgar (S&P)
 ├── fetch.py              # NSE/S&P500 tickers, yfinance fundamentals, SEC EDGAR + cache
 ├── transform.py          # Snapshot building, trends, insights, company JSON assembly
 ├── enrich.py             # Screener.in shareholding & credit ratings parsing + batch
+├── summary.py            # Flat screening_summary schema + industry_comparison
 ├── index.py              # Screening summary, industry stats, percentiles, DB rebuild
 ├── runner.py             # Concurrent fetch→save engine shared by both market pipelines
 ├── cli.py                # Unified CLI implementation
 ├── db.py                 # screener.db rebuild logic
-├── query.py              # DuckDB SQL query logic
+├── query.py              # DuckDB SQL query logic (read-only)
 └── markets/
-    ├── nse.py            # NSE500 pipeline: fetch → transform → enrich → indices
-    └── us.py             # S&P500 pipeline: fetch → transform → EDGAR → indices
+    ├── __init__.py       # run_pipeline -- the shared orchestrator both nse.py/snp.py
+    │                     #   delegate to; every market-specific behavior comes from MarketConfig
+    ├── nse.py            # NSE500: thin wrapper over run_pipeline(NSE, ...)
+    └── snp.py            # S&P500: thin wrapper over run_pipeline(SNP, ...)
 
 scripts/
 ├── cli.py                # → screener.cli.main()   `python scripts/cli.py --market nse --mode full`
@@ -122,13 +130,10 @@ python scripts/data_refresh.py --market snp --dry-run          # Preview only
 
 ## Fresh clone (no data/)
 
-Bootstrap: `python scripts/data_refresh.py --mode full` (both markets) or pick one
-with `--market nse/snp`. The NSE500 quick start —
-`python scripts/data_refresh.py --market nse --mode quick`
-(top 50 stocks, ~5 min) is a fast partial start. Shareholding/credit-rating enrichment
-scrapes Screener.in and may partially fail — the core dataset is still usable; a later
-incremental run fills gaps. Run `python scripts/build_db.py --market all` afterward to
-build `data/screener.db` — it is not rebuilt automatically as part of the pipeline run.
+Bootstrap: `python scripts/data_refresh.py --mode full` (both markets, ~60-120 min —
+run in background), then `python scripts/build_db.py --market all` (never automatic).
+The `refresh-data` skill is also the first-time setup guide — quick-start alternative,
+SEC EDGAR contact setup, and partial-enrichment-failure handling all live there.
 
 ## Web research
 

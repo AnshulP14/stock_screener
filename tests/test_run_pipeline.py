@@ -129,7 +129,7 @@ def test_full_mode_with_uses_edgar_routes_through_edgar_trends_and_cik(tmp_path,
         edgar_calls.append((symbol, cik))
         return {"facts": {"us-gaap": {}}}  # no tags -> no years, but proves the route was taken
 
-    def fake_fetch_ticker_data(symbol, *, institutional_holders=False):
+    def fake_fetch_ticker_data(symbol, *, institutional_holders=False, annual_statements=True):
         return {"symbol": symbol, "info": {}, "fetch_time": "2026-01-01", "error": None}
 
     monkeypatch.setattr(markets_mod, "build_cik_map", fake_build_cik_map)
@@ -169,7 +169,7 @@ def test_full_mode_without_uses_edgar_does_not_build_cik_map(tmp_path, monkeypat
 def test_fetch_institutional_holders_flag_populates_institutional_ownership(tmp_path, monkeypatch):
     holders_df = pd.DataFrame([{"Holder": "Blackrock Inc.", "Shares": 100.0, "pctHeld": 0.05}])
 
-    def fake_fetch_ticker_data(symbol, *, institutional_holders=False):
+    def fake_fetch_ticker_data(symbol, *, institutional_holders=False, annual_statements=True):
         assert institutional_holders is True
         return {
             "symbol": symbol,
@@ -194,3 +194,58 @@ def test_fetch_institutional_holders_flag_populates_institutional_ownership(tmp_
     io = company["institutional_ownership"]
     assert io["pct_insider"] == pytest.approx(1.0)
     assert io["top_holders"] == [{"holder": "Blackrock Inc.", "shares": 100.0, "pct_out": pytest.approx(5.0)}]
+
+
+# ── manifest coverage (Phase 7 doc reconciliation) ────────────────────
+# CLAUDE.md's Freshness note names shareholding_coverage/edgar_coverage as
+# example manifest fields -- previously true of nothing, since no code wrote
+# them. _write_manifest computes these now, config-driven off the same
+# MarketConfig fields (enrichment_datasets/uses_edgar) that gate the
+# enrichment steps themselves.
+
+def test_write_manifest_computes_enrichment_dataset_coverage(tmp_path):
+    companies_dir = tmp_path / "companies"
+    companies_dir.mkdir()
+    (companies_dir / "AAA.json").write_text(json.dumps({"shareholding": {"promoter": [50.0]}}))
+    (companies_dir / "BBB.json").write_text(json.dumps({"shareholding": None}))
+
+    market = _test_market(
+        tmp_path, fetch_universe=lambda: ([], None), enrichment_datasets=("shareholding",),
+    )
+    markets_mod._write_manifest(market)
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["test"]["shareholding_coverage"] == 0.5
+
+
+def test_write_manifest_edgar_coverage_needs_real_years_not_just_a_resolved_cik(tmp_path):
+    companies_dir = tmp_path / "companies"
+    companies_dir.mkdir()
+    (companies_dir / "AAA.json").write_text(json.dumps(
+        {"cik": 123, "historical_trends": {"years_available": [2023, 2024]}}
+    ))
+    # A resolved CIK with no real filing history (see Phase 5: XOM's new
+    # holding-company CIK, FDXF/HONA's fresh spinoff CIKs) must not count as
+    # "covered" just because cik is set.
+    (companies_dir / "BBB.json").write_text(json.dumps(
+        {"cik": 456, "historical_trends": {"years_available": []}}
+    ))
+
+    market = _test_market(tmp_path, fetch_universe=lambda: ([], None), uses_edgar=True)
+    markets_mod._write_manifest(market)
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert manifest["test"]["edgar_coverage"] == 0.5
+
+
+def test_write_manifest_omits_coverage_keys_for_a_market_with_neither(tmp_path):
+    companies_dir = tmp_path / "companies"
+    companies_dir.mkdir()
+    (companies_dir / "AAA.json").write_text(json.dumps({}))
+
+    market = _test_market(tmp_path, fetch_universe=lambda: ([], None))
+    markets_mod._write_manifest(market)
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert "shareholding_coverage" not in manifest["test"]
+    assert "edgar_coverage" not in manifest["test"]

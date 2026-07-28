@@ -103,12 +103,47 @@ def _save_raw_csvs(market: MarketConfig, results: list[dict]) -> None:
     pd.DataFrame(records).to_csv(market.raw_csv_dir / "historical_annual.csv", index=False)
 
 
+def _coverage(paths: list, predicate) -> float:
+    """Fraction of `paths` whose loaded company JSON satisfies `predicate`.
+    An unreadable file just doesn't count as covered -- consistent with
+    build_indices' own "skip on read error" handling."""
+    if not paths:
+        return 0.0
+    covered = 0
+    for p in paths:
+        try:
+            with open(p) as f:
+                company = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if predicate(company):
+            covered += 1
+    return round(covered / len(paths), 4)
+
+
 def _write_manifest(market: MarketConfig) -> None:
     """Update data/manifest.json after pipeline run. Doesn't touch `db` --
-    this pipeline never rebuilds screener.db; rebuild_market_db owns that key."""
-    update_manifest(market.id, {
-        "total_companies": len(list(market.companies_dir.glob("*.json"))),
-    })
+    this pipeline never rebuilds screener.db; rebuild_market_db owns that key.
+
+    Enrichment coverage (CLAUDE.md's Freshness note names shareholding_coverage/
+    edgar_coverage as examples -- previously undocumented-as-missing: nothing
+    ever wrote them) is config-driven off the same fields that gate the
+    enrichment steps themselves, not a hardcoded per-market list."""
+    paths = list(market.companies_dir.glob("*.json"))
+    entry = {"total_companies": len(paths)}
+
+    for dataset in market.enrichment_datasets:
+        entry[f"{dataset}_coverage"] = _coverage(paths, lambda c, d=dataset: bool(c.get(d)))
+
+    if market.uses_edgar:
+        # cik alone isn't "covered" -- a resolved-but-empty EDGAR history (see
+        # Phase 5: XOM's new holding-company CIK, FDXF/HONA's spinoff CIKs)
+        # means years_available is empty even though cik is set.
+        entry["edgar_coverage"] = _coverage(
+            paths, lambda c: bool(c.get("historical_trends", {}).get("years_available"))
+        )
+
+    update_manifest(market.id, entry)
 
 
 def _finish(market: MarketConfig, start: float, *, skipped: int = 0) -> dict:
@@ -185,7 +220,9 @@ def _fetch_and_save(
     report = run_fetch_pipeline(
         symbols,
         fetch_fn=lambda s: fetch_ticker_data(
-            f"{s}{market.ticker_suffix}", institutional_holders=market.fetch_institutional_holders
+            f"{s}{market.ticker_suffix}",
+            institutional_holders=market.fetch_institutional_holders,
+            annual_statements=not market.uses_edgar,
         ),
         handle_fn=handle,
         workers=workers,

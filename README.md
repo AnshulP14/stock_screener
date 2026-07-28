@@ -17,11 +17,11 @@ local DuckDB file (`data/screener.db`) with SQL and uses web search to do the re
 │   ├── screener.db      # DuckDB file over the curated data — see data/SQL.md
 │   ├── SQL.md           # table reference + example queries
 │   └── SCHEMA.md        # field-by-field JSON shapes
-├── screener/            # the pipeline package: config, fetch, transform, enrich, index,
-│   │                    #   markets/ (nse.py, us.py), cli.py, db.py, query.py
+├── screener/            # the pipeline package: config, market, fetch, transform, enrich,
+│   │                    #   summary, index, markets/ (nse.py, snp.py), cli.py, db.py, query.py
 ├── scripts/             # thin CLI wrappers over screener/ (yfinance, NSE archives,
 │   │                    #   SEC EDGAR, Screener.in)
-│   ├── cli.py                 # unified entry: --market nse/us/all --mode full|incremental
+│   ├── cli.py                 # unified entry: --market nse/snp/all --mode full|incremental
 │   ├── build_db.py            # rebuild data/screener.db from curated JSON, no re-fetch
 │   ├── query.py                # run SQL against data/screener.db
 │   ├── data_refresh.py         # documented entry point (same interface as cli.py)
@@ -39,7 +39,7 @@ uv run pytest                                                # run the test suit
 
 # Build the data set (public sources; no keys needed)
 python scripts/data_refresh.py --market nse --mode full     # NSE500, ~60-90 min
-python scripts/data_refresh.py --market us --mode full      # S&P500 (requires SEC_EDGAR_CONTACT)
+python scripts/data_refresh.py --market snp --mode full     # S&P500 (SEC_EDGAR_CONTACT recommended, not required)
 
 # Or a quick partial start:
 python scripts/data_refresh.py --market nse --mode quick    # top 50 NSE stocks, ~5 min
@@ -61,7 +61,7 @@ Keeping data fresh:
 ```bash
 python scripts/data_refresh.py                          # Both markets, incremental
 python scripts/data_refresh.py --market nse --mode full # NSE full bootstrap
-python scripts/data_refresh.py --market us --mode rebuild # S&P500 indices only
+python scripts/data_refresh.py --market snp --mode rebuild # S&P500 indices only
 python scripts/data_refresh.py --market nse --symbols RELIANCE TCS  # Specific stocks
 ```
 
