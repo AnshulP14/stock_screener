@@ -15,11 +15,12 @@ never Read one of these files whole (they run 4MB+ each).
 
 ## Query idioms — batch, don't loop
 
-One query replaces several tool calls — use `python3 scripts/query.py "..."`, or with
-zero extra deps:
+One query replaces several tool calls. Use `uv run python3 -c "..."` (inline DuckDB) or the
+script wrapper — both are equivalent and don't require `uv sync` since DuckDB is a
+standalone binary.
 
 ```bash
-python3 -c "
+uv run python3 -c "
 import duckdb
 con = duckdb.connect('data/screener.db')
 for row in con.execute('SELECT * FROM nse LIMIT 5').fetchall():
@@ -27,7 +28,7 @@ for row in con.execute('SELECT * FROM nse LIMIT 5').fetchall():
 "
 ```
 
-Show column names: `python3 -c "import duckdb; [print(c[0]) for c in duckdb.connect('data/screener.db').execute('DESCRIBE nse').fetchall()]"`
+Show column names: `uv run python3 -c "import duckdb; [print(c[0]) for c in duckdb.connect('data/screener.db').execute('DESCRIBE nse').fetchall()]"`
 
 **Multi-symbol comparison in one query:**
 ```sql

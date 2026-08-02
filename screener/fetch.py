@@ -7,6 +7,7 @@ import os
 import threading
 import time
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -20,6 +21,7 @@ from .config import (
     EDGAR_CONTACT_FILE,
     EDGAR_FACTS,
     EDGAR_RATE_LIMIT,
+    EDGAR_SUBMISSIONS,
     EDGAR_TICKERS,
     FETCH_TIMEOUT,
     NSE500_URL,
@@ -231,6 +233,81 @@ def fetch_ticker_data(
             }
     except Exception as e:
         return _empty_result(symbol, str(e))
+
+
+def fetch_edgar_submissions(cik: int) -> dict | None:
+    """Fetch a company's SEC filing history (submissions API): every filing's
+    form type, accession number, filing/report date, and primary document
+    filename. No local cache -- unlike fetch_edgar_facts, this is only hit
+    once per annual-report download, not on every pipeline run.
+    """
+    try:
+        time.sleep(EDGAR_RATE_LIMIT)
+        url = EDGAR_SUBMISSIONS.format(cik=cik)
+        resp = requests.get(url, headers={"User-Agent": _edgar_ua()}, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        print(f"  EDGAR submissions fetch failed for CIK {cik}: {e}")
+        return None
+
+
+def get_10k_filings(submissions: dict, max_reports: int = 5) -> list[dict]:
+    """Extract the most recent 10-K filings (year, accession, document URL)
+    from a submissions payload's 'recent' filings list.
+
+    Only looks at 'recent' (SEC's last ~1000 filings per company), not the
+    paginated older-filings files -- S&P500 companies file annually, so 10-Ks
+    going back well past `max_reports` years are always inside that window.
+    """
+    cik = int(submissions.get("cik", 0))
+    recent = submissions.get("filings", {}).get("recent", {})
+    forms = recent.get("form", [])
+    accessions = recent.get("accessionNumber", [])
+    filing_dates = recent.get("filingDate", [])
+    report_dates = recent.get("reportDate", [])
+    primary_docs = recent.get("primaryDocument", [])
+
+    filings = []
+    for form, accession, filing_date, report_date, doc in zip(
+        forms, accessions, filing_dates, report_dates, primary_docs
+    ):
+        if form != "10-K":
+            continue
+        accession_nodash = accession.replace("-", "")
+        url = f"https://www.sec.gov/Archives/edgar/data/{cik}/{accession_nodash}/{doc}"
+        filings.append({
+            "year": (report_date or filing_date)[:4],
+            "accession": accession,
+            "filing_date": filing_date,
+            "url": url,
+        })
+
+    filings.sort(key=lambda f: f["filing_date"], reverse=True)
+    return filings[:max_reports]
+
+
+def download_edgar_document(url: str, output_path: Path) -> bool:
+    """Download a single EDGAR filing document (10-K htm/pdf) to disk."""
+    try:
+        time.sleep(EDGAR_RATE_LIMIT)
+        resp = requests.get(url, headers={"User-Agent": _edgar_ua()}, timeout=60, stream=True)
+        if resp.status_code != 200:
+            return False
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        if output_path.stat().st_size < 5000:
+            output_path.unlink()
+            return False
+        return True
+
+    except Exception as e:
+        print(f"  Download failed for {url}: {e}")
+        return False
 
 
 def fetch_ownership_snapshot(symbol: str) -> dict[str, Any]:

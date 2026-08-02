@@ -18,14 +18,14 @@ still missing or stale.
 # works, just with a generic User-Agent SEC is more likely to throttle)
 export SEC_EDGAR_CONTACT='you@example.com'          # or write it once to ~/.screener_edgar_email
 
-# Full bootstrap, both markets (~60-120 min total -- run in background)
-python scripts/data_refresh.py --mode full
+# Full bootstrap, both markets (~60-120 min total — run in background)
+uv run python scripts/data_refresh.py --mode full
 
 # Faster partial start if you just need something to query soon:
-python scripts/data_refresh.py --market nse --mode quick   # NSE top-50 by market cap, ~5 min
+uv run python scripts/data_refresh.py --market nse --mode quick   # NSE top-50 by market cap, ~5 min
 
 # Then, always:
-python scripts/build_db.py --market all             # data/screener.db is never built automatically
+uv run python scripts/build_db.py --market all             # data/screener.db is never built automatically
 ```
 
 Shareholding/credit-rating enrichment (NSE) scrapes Screener.in and may partially
@@ -37,19 +37,19 @@ failure as a reason to redo the whole bootstrap.
 
 ```bash
 # Both markets, incremental (default)
-python scripts/data_refresh.py
+uv run python scripts/data_refresh.py
 
 # Both markets, bootstrap from empty (~60-120 min total — run in background)
-python scripts/data_refresh.py --mode full
+uv run python scripts/data_refresh.py --mode full
 
 # Single market
-python scripts/data_refresh.py --market nse --mode full      # NSE bootstrap, ~60-90 min
-python scripts/data_refresh.py --market snp --mode full      # S&P500 bootstrap, varies (EDGAR throttled)
-python scripts/data_refresh.py --market nse --mode quick     # NSE top-50, ~5 min
-python scripts/data_refresh.py --market nse --mode sync-universe  # NSE index rebalance
-python scripts/data_refresh.py --market snp --mode rebuild   # S&P500 indices only
-python scripts/data_refresh.py --market nse --symbols RELIANCE TCS  # Specific stocks
-python scripts/data_refresh.py --market snp --dry-run        # Preview only
+uv run python scripts/data_refresh.py --market nse --mode full      # NSE bootstrap, ~60-90 min
+uv run python scripts/data_refresh.py --market snp --mode full      # S&P500 bootstrap, varies (EDGAR throttled)
+uv run python scripts/data_refresh.py --market nse --mode quick     # NSE top-50, ~5 min
+uv run python scripts/data_refresh.py --market nse --mode sync-universe  # NSE index rebalance
+uv run python scripts/data_refresh.py --market snp --mode rebuild   # S&P500 indices only
+uv run python scripts/data_refresh.py --market nse --symbols RELIANCE TCS  # Specific stocks
+uv run python scripts/data_refresh.py --market snp --dry-run        # Preview only
 ```
 
 ### Modes (per market)
@@ -70,7 +70,7 @@ python scripts/data_refresh.py --market snp --dry-run        # Preview only
 rebuilt automatically. Run this after any refresh, before querying:
 
 ```bash
-python scripts/build_db.py --market all   # or --market nse / snp
+uv run python scripts/build_db.py --market all   # or --market nse / snp
 ```
 
 Cheap — JSON → DB only, no re-fetch.

@@ -37,6 +37,7 @@ data/
     └── snp/
         ├── edgar_cache/{SYMBOL}.json  # full SEC XBRL companyfacts (~500 tags,
         │                               #   full filing history) — 4MB+ each, extract don't Read
+        ├── annual_reports/            # 10-K filing documents (htm) from SEC EDGAR
         └── sp500_universe.json
 ```
 
@@ -88,7 +89,8 @@ scripts/
 ├── build_db.py           # → screener.db.rebuild()
 ├── query.py              # → screener.query.query()
 ├── screener_in.py        # → screener.enrich (shareholding & credit ratings scraper CLI)
-└── fetch_annual_reports.py  # standalone annual report PDF downloader
+├── fetch_annual_reports.py     # NSE: annual report PDF downloader (screener.in)
+└── fetch_annual_reports_snp.py # S&P500: 10-K filing downloader (SEC EDGAR submissions API)
 ```
 
 `tests/` covers the package with pytest (`uv run pytest`) — focused on pure seams

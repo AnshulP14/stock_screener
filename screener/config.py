@@ -22,7 +22,9 @@ NSE500_URL = "https://nsearchives.nseindia.com/content/indices/ind_nifty500list.
 WIKIPEDIA_URL = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
 EDGAR_TICKERS = "https://www.sec.gov/files/company_tickers.json"
 EDGAR_FACTS = "https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json"
+EDGAR_SUBMISSIONS = "https://data.sec.gov/submissions/CIK{cik:010d}.json"
 EDGAR_CACHE_DIR = RAW_DIR / "snp" / "edgar_cache"
+SNP_ANNUAL_REPORTS_DIR = RAW_DIR / "snp" / "annual_reports"
 
 # Email/contact for SEC EDGAR
 EDGAR_CONTACT_FILE = Path.home() / ".screener_edgar_email"
