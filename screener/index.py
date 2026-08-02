@@ -8,12 +8,10 @@ import pandas as pd
 
 from .config import (
     BUILD_DB_DB_PATH,
-    COMPANIES_DIR,
     INDICES_DIR,
-    SNP_COMPANIES_DIR,
-    SNP_INDICES_DIR,
     MANIFEST_PATH,
 )
+from .store import CompanyStore
 from .summary import compute_industry_comparison, compute_industry_stats, compute_summary_row
 
 
@@ -21,7 +19,7 @@ from .summary import compute_industry_comparison, compute_industry_stats, comput
 
 def build_indices(
     *,
-    companies_dir: Path = COMPANIES_DIR,
+    store: CompanyStore,
     indices_dir: Path = INDICES_DIR,
 ) -> dict:
     """Build screening_summary.json and industry_stats.json from company
@@ -31,19 +29,14 @@ def build_indices(
     per-symbol fetch time the way the rest of the company JSON is built.
 
     Args:
-        companies_dir: directory containing company JSON files
+        store: CompanyStore over the companies directory
         indices_dir: directory to write screening_summary.json and industry_stats.json
 
     Returns:
         dict with summary count, industry count, and company count
     """
     print("  Building indices...")
-    loaded = []
-    for p in sorted(companies_dir.glob("*.json")):
-        try:
-            loaded.append((p, json.load(open(p))))
-        except Exception:
-            pass
+    loaded = list(store.iter_all())
 
     if not loaded:
         print("  No companies found. Nothing to build.")
@@ -85,9 +78,7 @@ def build_indices(
         if company.get("industry_comparison") == comparison:
             continue
         company["industry_comparison"] = comparison
-        tmp = path.parent / f".{path.name}.tmp"
-        tmp.write_text(json.dumps(company, indent=2))
-        tmp.replace(path)  # atomic: no torn files
+        store.save(path.stem, company)
         updated += 1
 
     print(f"  screening_summary.json: {len(summary)} companies")

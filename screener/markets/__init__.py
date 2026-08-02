@@ -19,16 +19,18 @@ sync-universe and full/quick/incremental/targeted call into explicitly.
 import json
 import time
 from datetime import datetime
+from pathlib import Path
 
 import pandas as pd
 
 from screener.config import MAX_WORKERS, RATE_LIMIT_DELAY, ROOT
 from screener.enrich import get_stale_symbols, process_symbols
 from screener.fetch import build_cik_map, fetch_edgar_facts, fetch_ticker_data
-from screener.freshness import is_stale
+from screener.freshness import stale_symbols
 from screener.index import build_indices, update_manifest
 from screener.market import MarketConfig
 from screener.runner import run_fetch_pipeline, write_failure_log
+from screener.store import CompanyStore
 from screener.transform import (
     build_company_json,
     build_current_snapshot,
@@ -38,35 +40,17 @@ from screener.transform import (
 )
 
 
-def _stale_symbols_for(market: MarketConfig, symbols: list[str], days_old: int) -> list[str]:
-    """A symbol refetches if any of this market's staleness policies flag it.
+def _stale_symbols_for(store: CompanyStore, symbols: list[str], policies) -> list[str]:
+    """A symbol refetches if any of `policies` flag it.
 
-    Reads each company file once and checks every policy against it, rather
-    than calling freshness.stale_symbols() once per policy -- which would
-    re-glob and re-read every file in companies_dir once per policy (2x for
-    NSE's QuarterLag + AgeDays combination on every incremental/sync-universe
-    run)."""
-    policies = market.staleness_policies(days_old)
-    stale = []
-    for sym in symbols:
-        path = market.companies_dir / f"{sym}.json"
-        if not path.exists():
-            stale.append(sym)
-            continue
-        try:
-            with open(path) as f:
-                company = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            stale.append(sym)
-            continue
-        if any(is_stale(company, policy) for policy in policies):
-            stale.append(sym)
-    return stale
+    Delegates to freshness.stale_symbols which now accepts a list of policies
+    and reads each file once regardless."""
+    return stale_symbols(store.dir_path, policies, symbols=symbols)
 
 
-def _top_symbols_by_mcap(market: MarketConfig, n: int = 50) -> list[str]:
+def _top_symbols_by_mcap(indices_dir: Path, n: int = 50) -> list[str]:
     """Return top N symbols by market cap from screening_summary.json."""
-    summary_path = market.indices_dir / "screening_summary.json"
+    summary_path = indices_dir / "screening_summary.json"
     if not summary_path.exists():
         print("  No screening_summary.json found.")
         return []
@@ -78,15 +62,15 @@ def _top_symbols_by_mcap(market: MarketConfig, n: int = 50) -> list[str]:
     return [c["symbol"] for c in ranked[:n]]
 
 
-def _save_raw_csvs(market: MarketConfig, results: list[dict]) -> None:
+def _save_raw_csvs(raw_csv_dir: Path | None, results: list[dict]) -> None:
     """Save current-snapshot and historical-trend CSVs, for markets that
     opt in via MarketConfig.raw_csv_dir (NSE only, today)."""
-    if not market.raw_csv_dir or not results:
+    if not raw_csv_dir or not results:
         return
-    market.raw_csv_dir.mkdir(parents=True, exist_ok=True)
+    raw_csv_dir.mkdir(parents=True, exist_ok=True)
 
     pd.DataFrame([r["snapshot"] for r in results]).to_csv(
-        market.raw_csv_dir / "current_metrics.csv", index=False
+        raw_csv_dir / "current_metrics.csv", index=False
     )
 
     records = []
@@ -100,56 +84,42 @@ def _save_raw_csvs(market: MarketConfig, results: list[dict]) -> None:
                 "net_income": t.get("net_income", {}).get("values"),
                 "eps": t.get("eps", {}).get("values"),
             })
-    pd.DataFrame(records).to_csv(market.raw_csv_dir / "historical_annual.csv", index=False)
+    pd.DataFrame(records).to_csv(raw_csv_dir / "historical_annual.csv", index=False)
 
 
-def _coverage(paths: list, predicate) -> float:
-    """Fraction of `paths` whose loaded company JSON satisfies `predicate`.
-    An unreadable file just doesn't count as covered -- consistent with
-    build_indices' own "skip on read error" handling."""
-    if not paths:
+def _coverage(store: CompanyStore, predicate) -> float:
+    """Fraction of company files whose loaded JSON satisfies `predicate`.
+    An unreadable file just doesn't count as covered."""
+    all_symbols = store.symbols()
+    if not all_symbols:
         return 0.0
-    covered = 0
-    for p in paths:
-        try:
-            with open(p) as f:
-                company = json.load(f)
-        except (OSError, json.JSONDecodeError):
-            continue
-        if predicate(company):
-            covered += 1
-    return round(covered / len(paths), 4)
+    covered = sum(1 for _, c in store.iter_all() if predicate(c))
+    return round(covered / len(all_symbols), 4)
 
 
-def _write_manifest(market: MarketConfig) -> None:
+def _write_manifest(market: MarketConfig, store: CompanyStore) -> None:
     """Update data/manifest.json after pipeline run. Doesn't touch `db` --
     this pipeline never rebuilds screener.db; rebuild_market_db owns that key.
 
-    Enrichment coverage (CLAUDE.md's Freshness note names shareholding_coverage/
-    edgar_coverage as examples -- previously undocumented-as-missing: nothing
-    ever wrote them) is config-driven off the same fields that gate the
+    Enrichment coverage is config-driven off the same fields that gate the
     enrichment steps themselves, not a hardcoded per-market list."""
-    paths = list(market.companies_dir.glob("*.json"))
-    entry = {"total_companies": len(paths)}
+    entry = {"total_companies": len(store.symbols())}
 
     for dataset in market.enrichment_datasets:
-        entry[f"{dataset}_coverage"] = _coverage(paths, lambda c, d=dataset: bool(c.get(d)))
+        entry[f"{dataset}_coverage"] = _coverage(store, lambda c, d=dataset: bool(c.get(d)))
 
     if market.uses_edgar:
-        # cik alone isn't "covered" -- a resolved-but-empty EDGAR history (see
-        # Phase 5: XOM's new holding-company CIK, FDXF/HONA's spinoff CIKs)
-        # means years_available is empty even though cik is set.
         entry["edgar_coverage"] = _coverage(
-            paths, lambda c: bool(c.get("historical_trends", {}).get("years_available"))
+            store, lambda c: bool(c.get("historical_trends", {}).get("years_available"))
         )
 
     update_manifest(market.id, entry)
 
 
-def _finish(market: MarketConfig, start: float, *, skipped: int = 0) -> dict:
-    build_indices(companies_dir=market.companies_dir, indices_dir=market.indices_dir)
+def _finish(market: MarketConfig, store: CompanyStore, start: float, *, skipped: int = 0) -> dict:
+    build_indices(store=store, indices_dir=market.indices_dir)
     elapsed = time.time() - start
-    _write_manifest(market)
+    _write_manifest(market, store)
     print(f"\nDone in {elapsed:.1f}s\n")
     return {"fetched": 0, "failed": 0, "skipped": skipped, "elapsed": elapsed}
 
@@ -170,9 +140,8 @@ def _fetch_and_save(
     fetch (sync-universe, full, quick, incremental, targeted).
 
     enrichment_symbols: restricts the enrichment staleness check to this set
-    (a targeted `--symbols` run) instead of the whole companies_dir -- see
-    get_stale_symbols."""
-    companies_dir = market.companies_dir
+    (a targeted `--symbols` run) instead of the whole companies_dir."""
+    store = CompanyStore(market.companies_dir)
     indices_dir = market.indices_dir
 
     if dry_run:
@@ -189,7 +158,7 @@ def _fetch_and_save(
 
     # Each company is written as its fetch lands, so an interrupted or
     # rate-limited run keeps everything fetched up to that point.
-    companies_dir.mkdir(parents=True, exist_ok=True)
+    store.dir_path.mkdir(parents=True, exist_ok=True)
 
     # Built once per run, not per symbol -- build_cik_map does a single bulk
     # fetch of SEC's full ticker->CIK table (see fetch.build_cik_map's
@@ -199,7 +168,7 @@ def _fetch_and_save(
     def handle(sym: str, raw: dict) -> dict:
         if market.uses_edgar:
             cik = cik_map.get(sym)
-            trends = build_historical_trends_edgar(fetch_edgar_facts(sym, cik))
+            trends = build_historical_trends_edgar(fetch_edgar_facts(sym, cik), market)
         else:
             cik = None
             trends = build_historical_trends(raw, market)
@@ -210,10 +179,7 @@ def _fetch_and_save(
             sym, raw, metadata, trends, None, None, market=market,
             cik=cik, institutional_ownership=institutional_ownership,
         )
-        tmp = companies_dir / f".{sym}.json.tmp"
-        with open(tmp, "w") as f:
-            json.dump(company, f, indent=2)
-        tmp.replace(companies_dir / f"{sym}.json")  # atomic: no torn files
+        store.save(sym, company)
         trends["symbol"] = sym
         return {"snapshot": build_current_snapshot(raw, market), "trends": trends}
 
@@ -231,18 +197,18 @@ def _fetch_and_save(
     results, failed = report.saved, report.failed
     write_failure_log(market.failed_tickers_path, failed)
 
-    _save_raw_csvs(market, results)
+    _save_raw_csvs(market.raw_csv_dir, results)
 
     if not no_transform:
         print("\nRebuilding indices...")
-        build_indices(companies_dir=companies_dir, indices_dir=indices_dir)
+        build_indices(store=store, indices_dir=indices_dir)
 
     if market.enrichment_datasets:
         print("\nUpdating enrichments...")
         for dataset in market.enrichment_datasets:
-            stale = get_stale_symbols(dataset, enrichment_symbols)
+            stale = get_stale_symbols(dataset, store, enrichment_symbols)
             if stale:
-                ok, skipped, failed_n = process_symbols(stale, dataset)
+                ok, skipped, failed_n = process_symbols(stale, dataset, store)
                 print(f"  {dataset}: {ok} updated  {skipped} skipped  {failed_n} failed")
 
     elapsed = time.time() - start
@@ -265,7 +231,7 @@ def _fetch_and_save(
             print(f"  Index: {total} companies (as of {gen})")
     print("=" * 60 + "\n")
 
-    _write_manifest(market)
+    _write_manifest(market, store)
     return {"fetched": len(results), "failed": len(failed), "skipped": max(skipped_count, 0), "elapsed": round(elapsed, 1)}
 
 
@@ -297,11 +263,11 @@ def run_pipeline(
     print(f"  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 60)
 
-    companies_dir = market.companies_dir
+    store = CompanyStore(market.companies_dir)
 
     if mode in ("transform-only", "rebuild"):
         print(f"\nMode: {'TRANSFORM ONLY' if mode == 'transform-only' else 'REBUILD INDICES'}")
-        return _finish(market, start)
+        return _finish(market, store, start)
 
     metadata = None
     total_considered = 0
@@ -311,17 +277,16 @@ def run_pipeline(
         print("\nMode: SYNC UNIVERSE")
         universe_symbols, metadata = market.fetch_universe()
         current_symbols = set(universe_symbols)
-        existing_symbols = {p.stem for p in companies_dir.glob("*.json")} if companies_dir.exists() else set()
+        existing_symbols = set(store.symbols())
 
         removed = sorted(existing_symbols - current_symbols)
         for sym in removed:
-            path = companies_dir / f"{sym}.json"
-            if path.exists():
-                path.unlink()
-                print(f"    Deleted {path.name}")
+            store.delete(sym)
+            print(f"    Deleted {sym}.json")
 
         total_considered = len(current_symbols)
-        symbols = _stale_symbols_for(market, sorted(current_symbols), days_old)
+        policies = market.staleness_policies(days_old)
+        symbols = _stale_symbols_for(store, sorted(current_symbols), policies)
         print(f"  Removed from index: {len(removed)}")
         print(f"  Stale/missing: {len(symbols)}")
 
@@ -331,7 +296,7 @@ def run_pipeline(
             symbols, metadata = market.fetch_universe()
             total_considered = len(symbols)
         elif mode == "quick":
-            symbols = _top_symbols_by_mcap(market, 50)
+            symbols = _top_symbols_by_mcap(market.indices_dir, 50)
             if not symbols:
                 print("  No existing data; fetching top 50...")
                 all_symbols, metadata = market.fetch_universe()
@@ -349,7 +314,8 @@ def run_pipeline(
             # logic is needed beyond always fetching the live list here.
             all_symbols, metadata = market.fetch_universe()
             total_considered = len(all_symbols)
-            symbols = _stale_symbols_for(market, all_symbols, days_old)
+            policies = market.staleness_policies(days_old)
+            symbols = _stale_symbols_for(store, all_symbols, policies)
             print(f"  {len(all_symbols)} companies in universe")
             print(f"  {len(symbols)} stale, {len(all_symbols) - len(symbols)} up-to-date")
     else:
@@ -360,7 +326,7 @@ def run_pipeline(
 
     if not symbols:
         print("\nAll data up-to-date.")
-        return _finish(market, start, skipped=total_considered)
+        return _finish(market, store, start, skipped=total_considered)
 
     return _fetch_and_save(
         market, symbols, metadata,

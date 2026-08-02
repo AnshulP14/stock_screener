@@ -1,9 +1,7 @@
 """Transform raw fetch data into company JSONs with trends."""
 
 import math
-from datetime import datetime, date
-from io import StringIO
-from pathlib import Path
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -125,89 +123,6 @@ def build_current_snapshot(data: dict[str, Any], market: MarketConfig = NSE) -> 
 
 # ── Trend computation ───────────────────────────────────────────────
 
-def build_historical_trends(data: dict[str, Any], market: MarketConfig = NSE) -> dict[str, Any]:
-    """Compute revenue, EPS, margin, ROE, debt trends from annual data."""
-    info = data.get("info", {})
-    symbol = data["symbol"].replace(market.ticker_suffix, "")
-
-    statements = AnnualStatements.from_yfinance(
-        data.get("annual_income", pd.DataFrame()),
-        data.get("annual_balance", pd.DataFrame()),
-        data.get("annual_cashflow", pd.DataFrame()),
-        market.fiscal_year,
-    )
-
-    # Inherit sector/industry from info
-    sector = info.get("sector", "")
-    industry = info.get("industry", "")
-
-    # Yearly stats
-    years = statements.years
-    if not years:
-        return {"source": "yfinance", "years_available": [], "error": "no_annual_data"}
-
-    rev_vals = statements.revenue
-    ni_vals = statements.net_income
-    eps_vals = statements.diluted_eps
-    gross_vals = statements.gross_profit
-    op_vals = statements.operating_income
-    cf_vals = statements.free_cash_flow
-    debt_vals = statements.total_debt
-    eq_vals = statements.stockholders_equity
-
-    rev = [v for v in rev_vals if _safe_float(v)]
-    ni = [v for v in ni_vals if _safe_float(v)]
-    eps = [v for v in eps_vals if _safe_float(v)]
-
-    operating_margin = _compute_operating_margin(rev_vals, op_vals)
-    roe_values = [_safe_float(ni_v / eq) if _safe_float(ni_v) is not None and eq else None
-                  for ni_v, eq in zip(ni_vals, eq_vals)]
-    debt_to_equity_values = [_safe_float(d / e) if _safe_float(d) is not None and e else None
-                             for d, e in zip(debt_vals, eq_vals)]
-
-    return {
-        "source": "yfinance",
-        "years_available": years,
-        "revenue": {
-            "values": rev_vals,
-            "yoy_growth": yoy(rev_vals),
-            "cagr_3yr": cagr(rev),
-            "trend": classify_growth(rev_vals),
-        },
-        "net_income": {
-            "values": ni_vals,
-            "cagr_3yr": cagr(ni),
-            "trend": classify_growth(ni_vals),
-        },
-        "eps": {
-            "values": eps_vals,
-            "cagr_3yr": cagr(eps),
-            "trend": classify_growth(eps_vals),
-        },
-        "gross_profit": {
-            "values": gross_vals,
-            "trend": classify_growth(gross_vals),
-        },
-        "operating_margin": {
-            "values": operating_margin,
-            "direction": classify_margin_direction(operating_margin),
-        },
-        "roe": {
-            "values": roe_values,
-            "avg_3yr": average_roe(roe_values),
-        },
-        "debt_to_equity": {
-            "values": debt_to_equity_values,
-            "trend": classify_leverage(debt_to_equity_values),
-        },
-        "free_cash_flow": {
-            "values": cf_vals,
-            "positive_years": sum(1 for v in cf_vals if _safe_float(v) and v > 0),
-            "trend": classify_growth(cf_vals),
-        },
-    }
-
-
 def _compute_operating_margin(rev, op):
     m = []
     for r, o in zip(rev, op):
@@ -218,64 +133,106 @@ def _compute_operating_margin(rev, op):
     return m
 
 
-def build_historical_trends_edgar(facts: dict | None) -> dict[str, Any]:
-    """Compute S&P500's historical_trends from a SEC XBRL companyfacts
-    payload (screener.fetch.fetch_edgar_facts), via AnnualStatements.from_edgar.
+def build_trends(statements: AnnualStatements, series_spec: tuple, *, source: str) -> dict[str, Any]:
+    """Build historical_trends dict from statements + series spec.
 
-    Deliberately a smaller, different metric set than NSE's yfinance-derived
-    build_historical_trends -- see data/SCHEMA.md's historical_trends table:
-    no yoy_growth, and no roe/debt_to_equity/free_cash_flow (AnnualStatements.
-    from_edgar doesn't extract balance-sheet tags for those), plus
-    operating_cash_flow, which NSE doesn't track.
+    series_spec: tuple of (output_key, AnnualLineItems attribute name) pairs.
+    MarketConfig.trend_series provides the market-specific spec. Both markets
+    share the same output key ("values") — the currency is on the top-level
+    company JSON, not duplicated per series.
+
+    Derives composite metrics (operating_margin, roe, debt_to_equity) from
+    the base series when the constituent line items are present, so SNP (which
+    lacks balance-sheet data in EDGAR) simply omits those composites.
     """
-    statements = AnnualStatements.from_edgar(facts)
     years = statements.years
     if not years:
-        return {"source": "edgar_xbrl", "years_available": [], "error": "no_edgar_data"}
+        return {"source": source, "years_available": [], "error": "no_data"}
 
-    rev_vals = statements.revenue
-    ni_vals = statements.net_income
-    eps_vals = statements.diluted_eps
-    gross_vals = statements.gross_profit
-    op_vals = statements.operating_income
-    ocf_vals = statements.operating_cash_flow
+    out: dict[str, Any] = {"source": source, "years_available": years}
 
-    rev = [v for v in rev_vals if _safe_float(v)]
-    ni = [v for v in ni_vals if _safe_float(v)]
-    eps = [v for v in eps_vals if _safe_float(v)]
+    attr_map = {key: attr for key, attr in series_spec}
 
-    operating_margin = _compute_operating_margin(rev_vals, op_vals)
+    for out_key, attr_name in series_spec:
+        vals = getattr(statements, attr_name)
+        clean = [v for v in vals if _safe_float(v)]
 
-    return {
-        "source": "edgar_xbrl",
-        "years_available": years,
-        "revenue": {
-            "values": rev_vals,
-            "cagr_3yr": cagr(rev),
-            "trend": classify_growth(rev_vals),
-        },
-        "net_income": {
-            "values": ni_vals,
-            "cagr_3yr": cagr(ni),
-            "trend": classify_growth(ni_vals),
-        },
-        "eps": {
-            "values": eps_vals,
-            "cagr_3yr": cagr(eps),
-            "trend": classify_growth(eps_vals),
-        },
-        "operating_margin": {
-            "values": operating_margin,
-        },
-        "gross_profit": {
-            "values_usd": gross_vals,
-        },
-        "operating_cash_flow": {
-            "values_usd": ocf_vals,
-            "positive_years": sum(1 for v in ocf_vals if _safe_float(v) and v > 0),
-            "trend": classify_growth(ocf_vals),
-        },
-    }
+        entry: dict[str, Any] = {"values": vals}
+
+        if out_key in ("revenue", "net_income", "eps"):
+            entry["cagr_3yr"] = cagr(clean)
+            entry["trend"] = classify_growth(vals)
+
+        if out_key == "revenue":
+            entry["yoy_growth"] = yoy(vals)
+
+        if out_key in ("gross_profit", "free_cash_flow", "operating_cash_flow"):
+            entry["trend"] = classify_growth(vals)
+            entry["positive_years"] = sum(1 for v in vals if _safe_float(v) and v > 0)
+
+        out[out_key] = entry
+
+    # ── Composite: operating margin (needs revenue + operating_income) ──
+    if "revenue" in attr_map and "operating_income" in attr_map:
+        rev_vals = getattr(statements, attr_map["revenue"])
+        op_vals = getattr(statements, attr_map["operating_income"])
+        om = _compute_operating_margin(rev_vals, op_vals)
+        out["operating_margin"] = {
+            "values": om,
+            "direction": classify_margin_direction(om),
+        }
+
+    # ── Composite: ROE (needs net_income + stockholders_equity) ──
+    if "net_income" in attr_map and "stockholders_equity" in attr_map:
+        ni_vals = getattr(statements, attr_map["net_income"])
+        eq_vals = getattr(statements, attr_map["stockholders_equity"])
+        roe_values = [
+            _safe_float(ni_v / eq) if _safe_float(ni_v) is not None and eq else None
+            for ni_v, eq in zip(ni_vals, eq_vals)
+        ]
+        out["roe"] = {
+            "values": roe_values,
+            "avg_3yr": average_roe(roe_values),
+        }
+
+    # ── Composite: debt_to_equity (needs total_debt + stockholders_equity) ──
+    if "total_debt" in attr_map and "stockholders_equity" in attr_map:
+        debt_vals = getattr(statements, attr_map["total_debt"])
+        eq_vals = getattr(statements, attr_map["stockholders_equity"])
+        de_values = [
+            _safe_float(d / e) if _safe_float(d) is not None and e else None
+            for d, e in zip(debt_vals, eq_vals)
+        ]
+        out["debt_to_equity"] = {
+            "values": de_values,
+            "trend": classify_leverage(de_values),
+        }
+
+    return out
+
+
+def build_historical_trends(data: dict[str, Any], market: MarketConfig = NSE) -> dict[str, Any]:
+    """Compute historical trends from yfinance annual data (NSE only)."""
+    statements = AnnualStatements.from_yfinance(
+        data.get("annual_income", pd.DataFrame()),
+        data.get("annual_balance", pd.DataFrame()),
+        data.get("annual_cashflow", pd.DataFrame()),
+        market.fiscal_year,
+    )
+    return build_trends(statements, market.trend_series, source="yfinance")
+
+
+def build_historical_trends_edgar(facts: dict | None, market: MarketConfig | None = None) -> dict[str, Any]:
+    """Compute historical trends from SEC EDGAR XBRL companyfacts (S&P 500 only).
+
+    market defaults to SNP for backward compatibility with call sites that
+    predate the unified build_trends path.
+    """
+    if market is None:
+        from .market import SNP as _snp
+        market = _snp
+    statements = AnnualStatements.from_edgar(facts)
+    return build_trends(statements, market.trend_series, source="edgar_xbrl")
 
 
 def build_institutional_ownership(data: dict[str, Any]) -> dict | None:

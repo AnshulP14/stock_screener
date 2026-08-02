@@ -113,17 +113,21 @@ def is_stale(company: dict, policy: Policy, today: date | None = None) -> bool:
 
 def stale_symbols(
     companies_dir: Path,
-    policy: Policy,
+    policy: Policy | list[Policy],
     *,
     symbols: Iterable[str] | None = None,
     today: date | None = None,
 ) -> list[str]:
-    """Symbols whose company JSON is stale under `policy`.
+    """Symbols whose company JSON is stale under `policy` (single or list).
 
-    If `symbols` is given, it's the full universe to check (a symbol with no
+    When `symbols` is given, it's the full universe to check (a symbol with no
     file yet counts as stale — this is how a never-fetched ticker is caught).
     If omitted, falls back to globbing `companies_dir/*.json`.
+
+    Pass a list of policies to check all at once — each file is read once and
+    checked against every policy, rather than re-reading per policy.
     """
+    policies = list(policy) if isinstance(policy, (list, tuple)) else [policy]
     if symbols is None:
         symbols = sorted(p.stem for p in companies_dir.glob("*.json"))
 
@@ -139,6 +143,6 @@ def stale_symbols(
         except (OSError, json.JSONDecodeError):
             stale.append(sym)
             continue
-        if is_stale(company, policy, today):
+        if any(is_stale(company, p, today) for p in policies):
             stale.append(sym)
     return stale

@@ -16,15 +16,15 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from screener.markets import nse as nse_market
-from screener.markets import snp as snp_market
+from screener.market import MARKETS, coerce_mode
+from screener.markets import run_pipeline
 
 
-def _run_market(label: str, run_fn, kwargs: dict):
+def _run_market(label: str, market, kwargs: dict):
     print(f"\n{'─' * 60}")
     print(f"  {label}")
     print(f"{'─' * 60}")
-    return label, run_fn(**kwargs)
+    return label, run_pipeline(market, **kwargs)
 
 
 def main() -> None:
@@ -79,27 +79,21 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    markets = []
-    if args.market in ("nse", "all"):
-        markets.append(("NSE500", nse_market.run))
-    if args.market in ("snp", "all"):
-        markets.append(("S&P 500", snp_market.run))
+    market_configs = []
+    for key in ("nse", "snp") if args.market == "all" else [args.market]:
+        mc = MARKETS[key]
+        mode = coerce_mode(args.mode, mc)
+        if mode != args.mode:
+            print(f"  {mc.label}: '{args.mode}' not applicable, using '{mode}'")
+        market_configs.append(mc)
 
-    if not markets:
+    if not market_configs:
         print("Nothing to do.", file=sys.stderr)
         sys.exit(1)
 
     jobs = []
-    for label, run_fn in markets:
-        mode = args.mode
-
-        if label == "S&P 500" and mode in ("quick", "transform-only"):
-            print(f"  S&P 500: '{mode}' not applicable, using 'incremental'")
-            mode = "incremental"
-        if label == "NSE500" and mode == "rebuild":
-            print("  NSE500: 'rebuild' not applicable, using 'transform-only'")
-            mode = "transform-only"
-
+    for mc in market_configs:
+        mode = coerce_mode(args.mode, mc)
         kwargs = {
             "mode": mode,
             "symbols": args.symbols,
@@ -107,10 +101,9 @@ def main() -> None:
             "dry_run": args.dry_run,
             "days_old": args.days_old,
         }
-        if label == "NSE500":
+        if mc.id == "nse":
             kwargs["no_transform"] = args.no_transform
-
-        jobs.append((label, run_fn, kwargs))
+        jobs.append((mc.label, mc, kwargs))
 
     # Markets run concurrently as separate threads, but yfinance itself stays
     # a single sequential stream (screener.fetch._YFINANCE_LOCK) regardless --
@@ -121,7 +114,7 @@ def main() -> None:
     errors = []
 
     with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
-        futures = [pool.submit(_run_market, label, run_fn, kwargs) for label, run_fn, kwargs in jobs]
+        futures = [pool.submit(_run_market, label, mc, kwargs) for label, mc, kwargs in jobs]
         for future in as_completed(futures):
             try:
                 label, result = future.result()

@@ -63,17 +63,19 @@ class MarketConfig:
     # by build_company_json. Differs by market because the universe sources
     # differ (NSE's official CSV vs. Wikipedia's S&P table).
     metadata_fields: dict[str, str] = field(default_factory=dict)
+    # Trend series: list of (output_key, AnnualLineItems attribute name) pairs.
+    # NSE gets balance-sheet fields (roe, debt_to_equity, free_cash_flow);
+    # SNP (EDGAR) does not, so its list is shorter.
+    trend_series: tuple[tuple[str, str], ...] = ()
 
 
 def _nse_fiscal_year(d: date) -> int:
-    """Indian FY: Apr 1 - Mar 31. FY ending Mar 2024 = FY2024."""
+    """Indian FY: Apr 1 - Mar 31"""
     return d.year + 1 if d.month >= 4 else d.year
 
 
 def _snp_fiscal_year(d: date) -> int:
-    """US convention: fiscal year is labeled by the calendar year its period
-    ends in, regardless of the specific end month (e.g. Apple's Sept 30
-    year-end is still "FY2024" if it ends in 2024) -- no adjustment needed."""
+    """US FY: calendar year"""
     return d.year
 
 
@@ -116,6 +118,16 @@ NSE = MarketConfig(
     enrichment_datasets=("shareholding", "credit_ratings"),
     raw_csv_dir=RAW_DIR / "nse",
     metadata_fields={"isin": "isin_code", "nse_industry": "nse_industry"},
+    trend_series=(
+        ("revenue", "revenue"),
+        ("net_income", "net_income"),
+        ("eps", "diluted_eps"),
+        ("gross_profit", "gross_profit"),
+        ("operating_income", "operating_income"),
+        ("free_cash_flow", "free_cash_flow"),
+        ("total_debt", "total_debt"),
+        ("stockholders_equity", "stockholders_equity"),
+    ),
 )
 
 SNP = MarketConfig(
@@ -133,4 +145,36 @@ SNP = MarketConfig(
     uses_edgar=True,
     fetch_institutional_holders=True,
     metadata_fields={"gics_sector": "gics_sector", "gics_industry": "gics_industry"},
+    trend_series=(
+        ("revenue", "revenue"),
+        ("net_income", "net_income"),
+        ("eps", "diluted_eps"),
+        ("gross_profit", "gross_profit"),
+        ("operating_income", "operating_income"),
+        ("operating_cash_flow", "operating_cash_flow"),
+    ),
 )
+
+
+# ── Registry ─────────────────────────────────────────────────────────
+
+MARKETS: dict[str, MarketConfig] = {"nse": NSE, "snp": SNP}
+
+
+def coerce_mode(mode: str, market: MarketConfig) -> str:
+    """Map a CLI mode to one valid for `market`, or raise.
+
+    Cross-market fallback: 'quick' on SNP → 'incremental', 'rebuild' on NSE
+    → 'transform-only'. Every other mode is validated against the market's
+    own valid_modes tuple.
+    """
+    if mode in market.valid_modes:
+        return mode
+    fallbacks = {"quick": "incremental", "rebuild": "transform-only"}
+    mapped = fallbacks.get(mode)
+    if mapped and mapped in market.valid_modes:
+        return mapped
+    raise ValueError(
+        f"{market.label}: mode {mode!r} not supported "
+        f"(valid modes: {market.valid_modes})"
+    )

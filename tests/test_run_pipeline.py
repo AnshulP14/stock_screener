@@ -20,6 +20,7 @@ from screener import index as index_mod
 from screener import markets as markets_mod
 from screener.market import MarketConfig
 from screener.markets import run_pipeline
+from screener.store import CompanyStore
 
 
 @pytest.fixture(autouse=True)
@@ -212,7 +213,7 @@ def test_write_manifest_computes_enrichment_dataset_coverage(tmp_path):
     market = _test_market(
         tmp_path, fetch_universe=lambda: ([], None), enrichment_datasets=("shareholding",),
     )
-    markets_mod._write_manifest(market)
+    markets_mod._write_manifest(market, CompanyStore(companies_dir))
 
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert manifest["test"]["shareholding_coverage"] == 0.5
@@ -224,15 +225,12 @@ def test_write_manifest_edgar_coverage_needs_real_years_not_just_a_resolved_cik(
     (companies_dir / "AAA.json").write_text(json.dumps(
         {"cik": 123, "historical_trends": {"years_available": [2023, 2024]}}
     ))
-    # A resolved CIK with no real filing history (see Phase 5: XOM's new
-    # holding-company CIK, FDXF/HONA's fresh spinoff CIKs) must not count as
-    # "covered" just because cik is set.
     (companies_dir / "BBB.json").write_text(json.dumps(
         {"cik": 456, "historical_trends": {"years_available": []}}
     ))
 
     market = _test_market(tmp_path, fetch_universe=lambda: ([], None), uses_edgar=True)
-    markets_mod._write_manifest(market)
+    markets_mod._write_manifest(market, CompanyStore(companies_dir))
 
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert manifest["test"]["edgar_coverage"] == 0.5
@@ -244,7 +242,7 @@ def test_write_manifest_omits_coverage_keys_for_a_market_with_neither(tmp_path):
     (companies_dir / "AAA.json").write_text(json.dumps({}))
 
     market = _test_market(tmp_path, fetch_universe=lambda: ([], None))
-    markets_mod._write_manifest(market)
+    markets_mod._write_manifest(market, CompanyStore(companies_dir))
 
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert "shareholding_coverage" not in manifest["test"]

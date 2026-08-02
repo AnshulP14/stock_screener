@@ -148,29 +148,33 @@ def test_build_historical_trends_edgar_source_is_edgar_xbrl():
     assert trends["years_available"] == [2023, 2024]
 
 
-def test_build_historical_trends_edgar_has_no_yoy_growth_roe_or_debt_fields():
+def test_build_historical_trends_edgar_has_no_roe_or_debt_fields():
+    # SNP lacks balance-sheet data in EDGAR, so composites are absent.
     trends = build_historical_trends_edgar(_edgar_facts())
-    assert "yoy_growth" not in trends["revenue"]
     assert "roe" not in trends
     assert "debt_to_equity" not in trends
     assert "free_cash_flow" not in trends
+    # Revenue still gets yoy_growth from the unified builder
+    assert "yoy_growth" in trends["revenue"]
 
 
-def test_build_historical_trends_edgar_gross_profit_and_ocf_use_values_usd_key():
+def test_build_historical_trends_edgar_gross_profit_and_ocf_use_values_key():
+    # Unified output key: "values" for both markets (currency is on company JSON top level).
     trends = build_historical_trends_edgar(_edgar_facts())
-    assert trends["gross_profit"]["values_usd"] == [400.0, 450.0]
-    assert trends["operating_cash_flow"]["values_usd"] == [-10.0, 150.0]
+    assert trends["gross_profit"]["values"] == [400.0, 450.0]
+    assert trends["operating_cash_flow"]["values"] == [-10.0, 150.0]
     assert trends["operating_cash_flow"]["positive_years"] == 1
 
 
-def test_build_historical_trends_edgar_operating_margin_has_only_values():
+def test_build_historical_trends_edgar_operating_margin_has_values_and_direction():
     trends = build_historical_trends_edgar(_edgar_facts())
-    assert trends["operating_margin"] == {"values": pytest.approx([0.08, 0.09])}
+    assert trends["operating_margin"]["values"] == pytest.approx([0.08, 0.09])
+    assert "direction" in trends["operating_margin"]
 
 
 def test_build_historical_trends_edgar_no_data_returns_error_marker():
     trends = build_historical_trends_edgar(None)
-    assert trends == {"source": "edgar_xbrl", "years_available": [], "error": "no_edgar_data"}
+    assert trends == {"source": "edgar_xbrl", "years_available": [], "error": "no_data"}
 
 
 # ── build_institutional_ownership ────────────────────────────────────

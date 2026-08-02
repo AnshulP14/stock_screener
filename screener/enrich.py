@@ -4,15 +4,13 @@ import json
 import re
 import time
 from datetime import date
-from pathlib import Path
-from typing import Any
 
 import requests
 from bs4 import BeautifulSoup
-from tqdm import tqdm
 
-from .config import COMPANIES_DIR, SCREENER_USER_AGENT, RATE_LIMIT_DELAY, CREDIT_RATINGS_STALE_DAYS
+from .config import SCREENER_USER_AGENT, RATE_LIMIT_DELAY, CREDIT_RATINGS_STALE_DAYS
 from .freshness import AgeDays, Market, QuarterLag, is_stale
+from .store import CompanyStore
 
 _QUARTER_POLICY = QuarterLag(field=("shareholding", "quarters", -1), market=Market.NSE)
 _RATINGS_POLICY = AgeDays(field=("credit_ratings", "updated_at"), days=CREDIT_RATINGS_STALE_DAYS)
@@ -43,18 +41,11 @@ def _fetch_soup(
     return None, statuses
 
 
-def _load_company(symbol: str) -> dict:
-    path = COMPANIES_DIR / f"{symbol}.json"
+def _load_company(symbol: str, store: CompanyStore) -> dict:
     try:
-        with open(path) as f:
-            return json.load(f)
-    except Exception:
+        return store.load(symbol)
+    except (FileNotFoundError, json.JSONDecodeError):
         return {"symbol": symbol}
-
-
-def _save_company(symbol: str, data: dict):
-    with open(COMPANIES_DIR / f"{symbol}.json", "w") as f:
-        json.dump(data, f, indent=2)
 
 
 # ── Shareholding ─────────────────────────────────────────────────────
@@ -197,7 +188,7 @@ DATASETS = {
 }
 
 
-def get_stale_symbols(dataset: str, symbols: list[str] | None = None) -> list[str]:
+def get_stale_symbols(dataset: str, store: CompanyStore, symbols: list[str] | None = None) -> list[str]:
     """Stale symbols for `dataset`.
 
     `symbols`, when given, restricts the check to that explicit set (a
@@ -205,32 +196,24 @@ def get_stale_symbols(dataset: str, symbols: list[str] | None = None) -> list[st
     otherwise a single-symbol retry re-checks enrichment staleness for the
     whole universe.
     """
-    _, _, is_stale = DATASETS[dataset]
-    paths = (
-        [COMPANIES_DIR / f"{s}.json" for s in symbols]
-        if symbols is not None
-        else sorted(COMPANIES_DIR.glob("*.json"))
-    )
+    _, _, is_stale_fn = DATASETS[dataset]
     stale = []
-    for p in paths:
-        if not p.exists():
+    for path, company in store.iter_all():
+        if symbols is not None and path.stem not in symbols:
             continue
-        try:
-            with open(p) as f:
-                stale.append(p.stem) if is_stale(json.load(f)) else None
-        except Exception:
-            stale.append(p.stem)
-    return [s for s in stale if s]
+        if is_stale_fn(company):
+            stale.append(path.stem)
+    return stale
 
 
-def process_symbols(symbols: list[str], dataset: str, *, force: bool = False, log_fn=print) -> tuple[int, int, int]:
-    key, parse_fn, is_stale = DATASETS[dataset]
+def process_symbols(symbols: list[str], dataset: str, store: CompanyStore, *, force: bool = False, log_fn=print) -> tuple[int, int, int]:
+    key, parse_fn, is_stale_fn = DATASETS[dataset]
     session = _get_session()
     ok = skipped = failed = rate_limited = 0
 
     for sym in symbols:
-        company = _load_company(sym)
-        if not force and not is_stale(company):
+        company = _load_company(sym, store)
+        if not force and not is_stale_fn(company):
             skipped += 1
             continue
 
@@ -246,7 +229,7 @@ def process_symbols(symbols: list[str], dataset: str, *, force: bool = False, lo
                 log_fn(f"  {sym}: fetch failed (status={statuses})")
         else:
             company[key] = result
-            _save_company(sym, company)
+            store.save(sym, company)
             ok += 1
 
         if len(symbols) > 25 and len(symbols) % 25 == 0:

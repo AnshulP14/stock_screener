@@ -76,8 +76,8 @@ was fully parsed — say so, and fall back to grep.
 ## Analysing
 
 Define what you're tracking, then use the loop. For cross-year theme/sentiment
-counting over flat text, `scripts/analyse_statements.py --symbol X` still works and
-doesn't need section boundaries. Otherwise:
+counting over flat text, use `scripts/filings.py grep` to find relevant passages
+then `read` the surrounding context — doesn't need section boundaries. Otherwise:
 
 - Search MD&A (`7`) and Business (`1`) for narrative/sentiment — **avoid** legal
   boilerplate and the audit opinion in `8`, which skew "we believe / we may" counts.
