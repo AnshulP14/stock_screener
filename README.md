@@ -1,69 +1,144 @@
 # Stock Screener
 
-A fundamental data set and screening toolkit for **NSE500 (India)** and **S&P500 (US)**
-stocks, designed to be driven by a coding agent (Claude Code / pi). There is no app: you
-open the repo in the agent, ask questions in natural language, and the agent queries the
-local DuckDB file (`data/screener.db`) with SQL and uses web search to do the research.
+Fundamental data for **NSE500 (India)** and **S&P500 (US)** stocks, driven by [pi](https://pi.dev).
 
-## Layout
+There is no app. You open this repo in pi, ask questions in natural language, and pi queries the local data and the web to answer them.
 
+## Quick start
+
+```bash
+git clone https://github.com/AnshulP14/stock_screener.git
+cd stock_screener
+pi
 ```
-├── AGENTS.md            # agent entry point: data map, commands, conventions
-│                        #   (CLAUDE.md symlinks here — same file, both names auto-load)
-├── data/                # gitignored — built locally by scripts/ (see Setup)
-│   ├── nse/             # curated NSE500: companies/, indices/
-│   ├── snp/             # curated S&P500 mirror: companies/, indices/
-│   ├── raw/             # deep-dive tier: edgar_cache, raw CSVs/JSON, annual reports
-│   ├── screener.db      # DuckDB file over the curated data — see data/SQL.md
-│   ├── SQL.md           # table reference + example queries
-│   └── SCHEMA.md        # field-by-field JSON shapes
-├── screener/            # the pipeline package: config, market, fetch, transform, enrich,
-│   │                    #   summary, index, markets/ (nse.py, snp.py), cli.py, db.py, query.py
-├── scripts/             # thin CLI wrappers over screener/ (yfinance, NSE archives,
-│   │                    #   SEC EDGAR, Screener.in)
-│   ├── cli.py                 # unified entry: --market nse/snp/all --mode full|incremental
-│   ├── build_db.py            # rebuild data/screener.db from curated JSON, no re-fetch
-│   ├── query.py                # run SQL against data/screener.db
-│   ├── data_refresh.py         # documented entry point (same interface as cli.py)
-│   ├── screener_in.py         # Screener.in scraper (shareholding + credit ratings)
-│   └── fetch_annual_reports.py # annual report PDFs
-├── tests/               # pytest — pure seams only, no network calls
-└── .agents/skills/      # screen-stocks, refresh-data (canonical; .claude/skills/ symlinks here)
-```
+
+Then ask pi anything:
+
+> screen the NSE500 for value stocks with P/E under 15 and ROE above 15%
+
+> how does TCS compare to INFY on profitability and growth?
+
+> what are the risk factors Apple mentioned in their 2024 10-K?
+
+Pi uses the skills below to know what data exists and how to query it.
+
+---
 
 ## Setup
 
+### 1. Install dependencies
+
 ```bash
 uv sync
-uv run pytest                                                # run the test suite
+```
 
-# Build the data set (public sources; no keys needed)
-python scripts/data_refresh.py --market nse --mode full     # NSE500, ~60-90 min
-python scripts/data_refresh.py --market snp --mode full     # S&P500 (SEC_EDGAR_CONTACT recommended, not required)
+### 2. Bootstrap the data
 
-# Or a quick partial start:
-python scripts/data_refresh.py --market nse --mode quick    # top 50 NSE stocks, ~5 min
+The `data/` directory is gitignored — you need to fetch it once. The fastest path to something queryable:
 
-# Rebuild data/screener.db — not automatic, run after any refresh above:
+```bash
+python scripts/data_refresh.py --market nse --mode quick   # top 50 NSE stocks, ~5 min
+python scripts/build_db.py --market nse                     # build the query database
+```
+
+For the full dataset (both markets, all 500+ companies, ~60-120 min):
+
+```bash
+python scripts/data_refresh.py --mode full
 python scripts/build_db.py --market all
 ```
 
-## Usage
+> **Tip:** Open pi and ask "set up the data" — the `refresh-data` skill will walk you through it.
 
-```sql
--- SQL against data/screener.db (see data/SQL.md)
-SELECT symbol, sector, trailing_pe, roe FROM nse
-WHERE trailing_pe < 15 AND roe > 0.15 ORDER BY roe DESC LIMIT 20;
-```
+---
 
-Keeping data fresh:
+## Skills
+
+This repo ships three skills in `.agents/skills/`. Pi loads them automatically when you open the repo. Each skill is also available as a `/skill:name` command.
+
+| Skill | Command | What it does |
+|-------|---------|--------------|
+| **screen-stocks** | `/skill:screen-stocks` | SQL queries, strategy recipes (value, growth, quality, GARP), sector caveats |
+| **refresh-data** | `/skill:refresh-data` | Bootstrap, update, or fix stale data — both markets |
+| **analyse-statements** | `/skill:analyse-statements` | Navigate 10-K filings: outline, grep, read sections, compare across years |
+
+### screen-stocks
+
+Use for any stock screening, ranking, or company-profile question. Pi queries `data/screener.db` with SQL and can also fetch news and qualitative context.
+
+**Examples:**
+- "find me GARP stocks in the NSE500"
+- "show me the top 10 S&P500 companies by ROE"
+- "compare the debt profiles of RELIANCE and TATASTEEL"
+- "which S&P500 companies have heavy institutional ownership?"
+
+Strategy recipes the skill knows: value, growth, quality, GARP, relative value, institutional confidence. See `data/SQL.md` for more SQL examples.
+
+### refresh-data
+
+Use when data is missing, stale, or you want to set up a fresh clone.
+
+**Examples:**
+- "set up the data for the first time"
+- "refresh the NSE500 data"
+- "update just AAPL and MSFT"
+- "the data looks stale, what should I do?"
+
+Rebuilding the query database (`build_db.py`) is **not** automatic — always run it after any refresh:
 
 ```bash
-python scripts/data_refresh.py                          # Both markets, incremental
-python scripts/data_refresh.py --market nse --mode full # NSE full bootstrap
-python scripts/data_refresh.py --market snp --mode rebuild # S&P500 indices only
-python scripts/data_refresh.py --market nse --symbols RELIANCE TCS  # Specific stocks
+python scripts/build_db.py --market all
 ```
 
-But mostly: open the repo in Claude Code and ask. The `screen-stocks` and `refresh-data`
-skills teach the agent the strategy recipes and update workflow.
+> **Tip:** Ask pi "is the data fresh?" — it will check `data/manifest.json` and tell you.
+
+### analyse-statements
+
+Use to read and compare 10-K annual reports (S&P500 only). 10-Ks are huge (~150k tokens each), so the skill provides a navigation loop: outline → grep → windowed read → compare.
+
+**Examples:**
+- "what risks did Apple mention in their latest 10-K?"
+- "how has Tesla's risk discussion changed over the last 3 years?"
+- "find mentions of tariffs in AMD's 2024 filing"
+
+If the filings aren't downloaded yet:
+```bash
+python scripts/fetch_annual_reports_snp.py --symbol AAPL
+python scripts/filings.py index --symbols AAPL
+```
+
+> NSE annual reports are PDFs — out of scope for this skill. Use web search for India-specific filings.
+
+---
+
+## How it works
+
+```
+data/
+├── nse/companies/{SYMBOL}.json     # per-company profile (NSE500)
+├── nse/indices/screening_summary.json  # flat screening data
+├── snp/                            # same structure for S&P500
+├── screener.db                     # DuckDB file — the only query surface
+└── raw/                            # deep-dive tier (EDGAR cache, annual reports)
+```
+
+Pi queries `data/screener.db` with SQL for structured analysis, and uses web search for news and qualitative context. The curated JSON files (`nse/`, `snp/`) are the source of truth — `screener.db` is rebuilt from them.
+
+## Keeping data fresh
+
+Pi can handle this for you ("refresh the data"), or run it manually:
+
+```bash
+python scripts/data_refresh.py                          # both markets, incremental
+python scripts/data_refresh.py --market nse --mode full # NSE full bootstrap
+python scripts/data_refresh.py --market nse --symbols RELIANCE TCS
+python scripts/build_db.py --market all                  # rebuild query DB
+```
+
+Check `data/manifest.json` for per-market timestamps and coverage.
+
+---
+
+## For agents
+
+`AGENTS.md` is the canonical reference for agent-driven workflows: data map, package structure, SQL reference, house rules. If you're extending the pipeline or adding new markets, start there.
