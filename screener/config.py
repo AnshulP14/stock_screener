@@ -30,14 +30,11 @@ SNP_ANNUAL_REPORTS_DIR = RAW_DIR / "snp" / "annual_reports"
 EDGAR_CONTACT_FILE = Path.home() / ".screener_edgar_email"
 
 # User agents
-EDGAR_USER_AGENT = "sp500-screener-bot"
 YFINANCE_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
 SCREENER_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
 # Screener.in URLs
 SCREENER_BASE_URL = "https://www.screener.in/company"
-SCREENER_PDF_URL = "https://www.screener.in"
-
 # Defaults
 MAX_WORKERS = 1  # one yfinance fetch in flight at a time (see fetch._YFINANCE_LOCK)
 RATE_LIMIT_DELAY = 1.0  # min seconds between ticker fetches (global, all threads)

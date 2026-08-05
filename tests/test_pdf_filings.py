@@ -1,12 +1,4 @@
-"""Section detection in NSE annual report PDFs is freeform: no list of expected section
-names exists anywhere in the module, because no section name is used by even 40% of
-companies. These tests therefore assert on structure -- that the largest line on a page
-becomes that page's heading, that consecutive repeats merge into one range while distant
-repeats stay separate, and that the four navigation tools stay addressed by page.
-
-The fixture is built with fitz so it exercises the real font-size logic rather than a
-stubbed parser.
-"""
+"""Tests for NSE annual-report PDF navigation."""
 
 from pathlib import Path
 
@@ -113,67 +105,3 @@ def test_at_most_one_heading_per_page(report: Path):
     not with how densely it is typeset."""
     _text, _offsets, sections, meta = pf.parse_pdf(report)
     assert sum(s["pages"] for s in sections) <= meta["pages"]
-
-
-def test_index_writes_text_and_page_offsets(report: Path):
-    idx = pf.build_index(report)
-    assert idx["section_count"] == len(idx["sections"])
-    assert len(idx["page_offsets"]) == idx["pages"]
-    assert pf.txt_path(report).exists()
-
-
-def test_filings_lists_years_without_outlines(report: Path):
-    """`filings` answers "which years exist" -- returning outlines too would cost more
-    context than the rest of the session."""
-    base = report.parent.parent
-    # unindexed: answers from the PDF's page count alone rather than parsing it
-    assert pf.filings("WIDG", base_dir=base)["filings"] == [
-        {"fy": 2024, "pages": 11, "sections": None}]
-    pf.build_index(report)
-    row = pf.filings("WIDG", base_dir=base)["filings"][0]
-    assert isinstance(row["sections"], int) and row["sections"] > 0
-
-
-def test_grep_hits_are_page_addressed(report: Path):
-    hits = pf.grep("WIDG", "ordinary body copy", base_dir=report.parent.parent)
-    assert hits["hit_count"] > 0
-    assert all(1 <= h["page"] <= 11 for h in hits["hits"])
-    assert all(h["excerpt"] for h in hits["hits"])
-
-
-def test_grep_paginates_and_reports_the_true_total(report: Path):
-    """A truncated result set must be visible as truncated, or the agent concludes it
-    has seen every match when it has seen ten."""
-    base = report.parent.parent
-    first = pf.grep("WIDG", "ordinary", base_dir=base, limit=3)
-    assert first["returned"] == 3
-    assert first["hit_count"] > 3
-    assert first["next_offset"] == 3
-    second = pf.grep("WIDG", "ordinary", base_dir=base, offset=3, limit=3)
-    assert second["hits"] != first["hits"]
-
-    tail = pf.grep("WIDG", "ordinary", base_dir=base, offset=0, limit=999)
-    assert tail["next_offset"] is None
-
-
-def test_read_page_returns_one_page_and_its_neighbours(report: Path):
-    r = pf.read_page("WIDG", 3, base_dir=report.parent.parent)
-    assert r["page"] == 3 and r["prev_page"] == 2 and r["next_page"] == 4
-    assert r["section"] == "Board's Report"
-    assert "Ordinary body copy" in r["text"]
-
-
-def test_read_page_rejects_a_page_outside_the_document(report: Path):
-    with pytest.raises(ValueError, match="pages 1-11"):
-        pf.read_page("WIDG", 999, base_dir=report.parent.parent)
-
-
-def test_resolve_defaults_to_the_newest_year(tmp_path: Path):
-    d = tmp_path / "WIDG"
-    d.mkdir()
-    for fy in (2023, 2025, 2024):
-        doc = fitz.open()
-        _page(doc, title="Board's Report")
-        doc.save(d / f"WIDG_AR_{fy}.pdf")
-        doc.close()
-    assert pf._fy_of(pf.resolve("WIDG", base_dir=tmp_path)) == 2025

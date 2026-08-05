@@ -9,22 +9,16 @@ import requests
 from bs4 import BeautifulSoup, Tag
 
 from .annual_reports import parse_annual_report_links
-from .config import CREDIT_RATINGS_STALE_DAYS, SCREENER_USER_AGENT
-from .freshness import NSE, AgeDays, QuarterLag, is_stale
-from .runner import SCREENER_LIMITER
+from .config import CREDIT_RATINGS_STALE_DAYS
+from .freshness import AgeDays, QuarterLag, is_stale
 from .index import iter_companies, load_company, merge_company
+from .runner import SCREENER_LIMITER
 
-_QUARTER_POLICY = QuarterLag(field=("shareholding", "quarters", -1), market=NSE)
+_QUARTER_POLICY = QuarterLag(field=("shareholding", "quarters", -1))
 _RATINGS_POLICY = AgeDays(field=("credit_ratings", "updated_at"), days=CREDIT_RATINGS_STALE_DAYS)
 
 
 # ── Helpers ─────────────────────────────────────────────────────────
-
-def _get_session() -> requests.Session:
-    s = requests.Session()
-    s.headers.update({"User-Agent": SCREENER_USER_AGENT, "Accept-Language": "en-US,en;q=0.9"})
-    return s
-
 
 def _fetch_soup(
     symbol: str, session: requests.Session | None = None
@@ -104,7 +98,7 @@ def _holding_trend(values: list[float | None], window: int = 4) -> str:
     clean = [v for v in values if v is not None]
     if len(clean) < window + 1:
         return "insufficient_data"
-    delta = clean[0] - clean[window]
+    delta = clean[-1] - clean[-window - 1]
     if delta > 1.0:
         return "increasing"
     if delta < -1.0:
@@ -189,75 +183,21 @@ def _is_ratings_stale(company: dict) -> bool:
     return is_stale(company, _RATINGS_POLICY)
 
 
-# ── Batch processing ───────────────────────────────────────────────
-
-DATASETS = {
-    "shareholding": ("shareholding", parse_shareholding, _is_shareholding_stale),
-    "credit_ratings": ("credit_ratings", parse_credit_ratings, _is_ratings_stale),
+_STALE_CHECKS = {
+    "shareholding": _is_shareholding_stale,
+    "credit_ratings": _is_ratings_stale,
 }
 
 
-def get_stale_symbols(dataset: str, dir_path: Path, symbols: list[str] | None = None) -> list[str]:
-    """Stale symbols for `dataset`.
-
-    `symbols`, when given, restricts the check to that explicit set (a
-    targeted `--symbols` run) instead of sweeping every company on disk --
-    otherwise a single-symbol retry re-checks enrichment staleness for the
-    whole universe.
-    """
-    _, _, is_stale_fn = DATASETS[dataset]
-    stale = []
-    for path, company in iter_companies(dir_path):
-        if symbols is not None and path.stem not in symbols:
-            continue
-        if is_stale_fn(company):
-            stale.append(path.stem)
-    return stale
-
-
-def process_symbols(symbols: list[str], dataset: str, dir_path: Path, *, force: bool = False, log_fn=print) -> tuple[int, int, int]:
-    key, parse_fn, is_stale_fn = DATASETS[dataset]
-    session = _get_session()
-    ok = skipped = failed = rate_limited = 0
-
-    for sym in symbols:
-        company = _load_company(sym, dir_path)
-        if not force and not is_stale_fn(company):
-            skipped += 1
-            continue
-
-        soup, statuses = _fetch_soup(sym, session)
-        result = parse_fn(soup) if soup else None
-        if result is None:
-            failed += 1
-            if 429 in statuses:
-                rate_limited += 1
-                log_fn(f"  {sym}: rate-limited (429) by Screener.in")
-            else:
-                log_fn(f"  {sym}: fetch failed (status={statuses})")
-        else:
-            merge_company(dir_path, sym, {key: result})
-            ok += 1
-
-        if len(symbols) > 25 and len(symbols) % 25 == 0:
-            suffix = f"  ({rate_limited} rate-limited)" if rate_limited else ""
-            log_fn(f"  [{ok + skipped + failed}/{len(symbols)}] {ok} ok  {skipped} skipped  {failed} failed{suffix}")
-
-    return ok, skipped, failed
+def get_stale_symbols(dataset: str, dir_path: Path) -> list[str]:
+    is_stale_fn = _STALE_CHECKS[dataset]
+    return [path.stem for path, company in iter_companies(dir_path) if is_stale_fn(company)]
 
 
 def process_symbol_full(
     sym: str, dir_path: Path, session: requests.Session, *, need_report: bool = False,
 ) -> list[dict]:
-    """One screener.in page fetch for `sym` -> shareholding + credit ratings
-    (merged in if stale) + annual report links (parsed if `need_report`).
-
-    Used by the combined NSE enrichment pass in run_pipeline, which folds
-    what used to be two separate scrapes (shareholding/ratings, then a
-    second pass for annual-report links) into a single request per symbol.
-    Returns the discovered report links (possibly empty) for the caller to
-    download -- this function never touches the filesystem for reports.
-    """
+    """Fetch and merge stale enrichment, returning annual-report links."""
     company = _load_company(sym, dir_path)
     need_shareholding = _is_shareholding_stale(company)
     need_ratings = _is_ratings_stale(company)

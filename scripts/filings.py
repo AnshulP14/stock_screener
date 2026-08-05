@@ -1,27 +1,5 @@
 #!/usr/bin/env python3
-"""Navigate long annual report filings without reading them whole — S&P500
-10-Ks (HTML, SEC EDGAR) or NSE annual reports (PDF, screener.in).
-
-Build the durable per-filing index (normalized .txt + .index.json) once, then use
-the outline -> grep -> read loop to drill down. `--market` goes before the subcommand.
-
-    # one-time (or after a re-fetch): build indexes
-    python scripts/filings.py --market snp index --all
-    python scripts/filings.py --market snp index --symbols AAPL GOOGL
-    python scripts/filings.py --market nse index --symbols RELIANCE TCS
-
-    # navigate
-    python scripts/filings.py --market snp filings AAPL              # which years are on disk
-    python scripts/filings.py --market snp outline AAPL              # latest filing's section map
-    python scripts/filings.py --market snp outline AAPL --fy 2024
-    python scripts/filings.py --market snp grep AAPL "tariff|China"  # search
-    python scripts/filings.py --market snp read AAPL 15              # read page 15
-
-    python scripts/filings.py --market nse filings RELIANCE
-    python scripts/filings.py --market nse outline RELIANCE --fy 2024
-    python scripts/filings.py --market nse grep RELIANCE "capex|expansion"
-    python scripts/filings.py --market nse read RELIANCE 47
-"""
+"""Index and navigate S&P 10-Ks or NSE annual reports."""
 
 from __future__ import annotations
 
@@ -30,11 +8,9 @@ import json
 import sys
 from pathlib import Path
 
-from tqdm import tqdm
-
-from screener import html_filings as hf
-from screener.filings import pdf_filings as pf
 from screener.config import SNP_ANNUAL_REPORTS_DIR
+from screener.filings import html_filings as hf
+from screener.filings import pdf_filings as pf
 
 
 def _emit(obj) -> None:
@@ -46,14 +22,18 @@ def _emit(obj) -> None:
 def _snp_index(args) -> None:
     base = Path(SNP_ANNUAL_REPORTS_DIR)
     if args.symbols:
-        htms = [p for s in args.symbols for p in hf.list_filings(s.upper(), base)]
+        htms = [
+            path
+            for symbol in args.symbols
+            for path in sorted(base.glob(f"{symbol.upper()}/{symbol.upper()}_10K_*.htm"))
+        ]
     else:
         htms = sorted(base.glob("*/*_10K_*.htm"))
     if not htms:
         sys.exit("No .htm filings found.")
 
     built, failed, empty = 0, [], []
-    for htm in tqdm(htms, desc="Indexing filings"):
+    for count, htm in enumerate(htms, 1):
         try:
             idx = hf.build_index(htm)
             if idx["sections"]:
@@ -62,6 +42,8 @@ def _snp_index(args) -> None:
                 empty.append(htm.name)
         except Exception as exc:  # keep going, report at the end
             failed.append((htm.name, str(exc)))
+        if count % 50 == 0:
+            print(f"  ...{count}/{len(htms)}", file=sys.stderr, flush=True)
         if len(failed) > 20 and len(empty) > 20:
             break
     _emit({"indexed": built, "empty_toc": empty[:20],

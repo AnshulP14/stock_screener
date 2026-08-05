@@ -1,11 +1,7 @@
-"""Annual report / 10-K downloaders — NSE (screener.in PDFs) and S&P500 (SEC
-EDGAR). Market-specific fetch logic (`fetch_nse_reports`/`fetch_snp_reports`)
-plus a shared single/batch download engine used by scripts/fetch_annual_reports.py.
-"""
+"""Annual-report downloads: Screener.in PDFs and SEC EDGAR 10-Ks."""
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
@@ -13,41 +9,19 @@ from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup, Tag
-from tqdm import tqdm
 
 from screener.config import (
-    INDICES_DIR,
     RAW_DIR,
-    SCREENER_BASE_URL,
     SCREENER_USER_AGENT,
     SNP_ANNUAL_REPORTS_DIR,
-    SNP_INDICES_DIR,
 )
-from screener.fetch import download_edgar_document, fetch_edgar_submissions, get_10k_filings
+from screener.edgar import download_document, fetch_submissions, get_10k_filings
 from screener.runner import SCREENER_LIMITER
 
 logger = logging.getLogger(__name__)
 
 NSE_REPORTS_DIR = RAW_DIR / "nse" / "annual_reports"
 SNP_REPORTS_DIR = SNP_ANNUAL_REPORTS_DIR
-
-
-# ── symbol listing ──────────────────────────────────────────────
-
-def nse500_symbols() -> list[str]:
-    summary_file = INDICES_DIR / "screening_summary.json"
-    if not summary_file.exists():
-        return []
-    return [c["symbol"] for c in json.loads(summary_file.read_text()).get("companies", [])]
-
-
-def snp500_symbol_ciks() -> dict[str, int]:
-    """Return {symbol: cik} for every S&P500 company in the curated summary."""
-    summary_file = SNP_INDICES_DIR / "screening_summary.json"
-    if not summary_file.exists():
-        return {}
-    companies = json.loads(summary_file.read_text()).get("companies", [])
-    return {c["symbol"]: c["cik"] for c in companies if c.get("cik")}
 
 
 # ── NSE: screener.in PDFs ───────────────────────────────────────
@@ -73,9 +47,7 @@ def _extract_year(text: str) -> str | None:
 
 def parse_annual_report_links(soup: BeautifulSoup) -> list[dict]:
     """Annual report links (year, url, label) from a screener.in company page's
-    documents section. Shared by the standalone fetch below and by the
-    combined enrichment pass (screener.enrich), which fetches the same page
-    for shareholding/ratings and reuses that soup instead of a second request."""
+    documents section. The enrichment pass reuses the page it already fetched."""
     ar_section = soup.find("div", {"class": "annual-reports"})
     if not isinstance(ar_section, Tag):
         return []
@@ -89,28 +61,6 @@ def parse_annual_report_links(soup: BeautifulSoup) -> list[dict]:
             year = _extract_year(text) or _extract_year(href)
             reports.append({"year": year or "unknown", "url": href, "label": text})
     return reports
-
-
-def _list_screener_reports(symbol: str, session: requests.Session) -> tuple[list[dict], str | None]:
-    """Fetch a screener.in company page and scrape its annual report links."""
-    for view in ("consolidated", ""):
-        url = f"{SCREENER_BASE_URL}/{symbol}/{view}#documents"
-        SCREENER_LIMITER.acquire()
-        try:
-            response = session.get(url, timeout=30)
-            if response.status_code == 429:
-                SCREENER_LIMITER.penalize()
-            else:
-                SCREENER_LIMITER.reward()
-            if response.status_code != 200:
-                continue
-            reports = parse_annual_report_links(BeautifulSoup(response.text, "html.parser"))
-            if reports:
-                return reports, None
-        except Exception as e:
-            logger.debug(f"Error fetching {symbol} from screener: {e}")
-            return [], str(e)
-    return [], None
 
 
 def download_reports(symbol: str, items: list[dict], symbol_dir: Path, session: requests.Session,
@@ -133,10 +83,7 @@ def download_reports(symbol: str, items: list[dict], symbol_dir: Path, session: 
 
 
 def is_report_stale(symbol_dir: Path, glob_pattern: str, max_age_days: int = 400) -> bool:
-    """A symbol's report folder is stale if it has no matching file, or the
-    newest one is older than `max_age_days` -- annual reports/10-Ks are only
-    published ~once a year, so file mtime (not a fiscal-year label match) is
-    a simple, robust enough staleness signal."""
+    """Return whether a report folder is empty or older than `max_age_days`."""
     files = list(symbol_dir.glob(glob_pattern))
     if not files:
         return True
@@ -166,39 +113,11 @@ def _download_pdf(url: str, output_path: Path, session: requests.Session) -> boo
         return False
 
 
-def fetch_nse_reports(
-    symbol: str, session: requests.Session, *, year: str | None = None, max_reports: int = 1,
-) -> dict:
-    """Scrape + download NSE annual report PDFs from screener.in for one symbol."""
-    items, error = _list_screener_reports(symbol, session)
-    if not items:
-        return {"symbol": symbol, "success": False, "items": [], "downloaded": [],
-                "error": error or "No annual reports found on screener.in"}
-
-    symbol_dir = NSE_REPORTS_DIR / symbol
-    downloaded = []
-    for report in items[:5]:
-        report_year, url = report["year"], report["url"]
-        if not url or (year and year not in str(report_year)):
-            continue
-
-        year_str = str(report_year).replace("-", "_").replace("/", "_")
-        output_path = symbol_dir / f"{symbol}_AR_{year_str}.pdf"
-        if output_path.exists() or _download_pdf(url, output_path, session):
-            downloaded.append(str(output_path))
-
-        if len(downloaded) >= max_reports and not year:
-            break
-
-    return {"symbol": symbol, "success": bool(downloaded), "items": items[:5], "downloaded": downloaded,
-            "error": None if downloaded else "Download failed"}
-
-
 # ── S&P500: SEC EDGAR 10-Ks ─────────────────────────────────────
 
 def fetch_snp_reports(symbol: str, cik: int, *, max_reports: int = 1) -> dict:
     """Fetch + download 10-K filing documents from SEC EDGAR for one symbol."""
-    submissions = fetch_edgar_submissions(cik)
+    submissions = fetch_submissions(cik)
     if not submissions:
         return {"symbol": symbol, "success": False, "items": [], "downloaded": [],
                 "error": "Could not fetch EDGAR submissions"}
@@ -214,50 +133,8 @@ def fetch_snp_reports(symbol: str, cik: int, *, max_reports: int = 1) -> dict:
     for filing in filings:
         ext = Path(filing["url"]).suffix or ".htm"
         output_path = symbol_dir / f"{symbol}_10K_{filing['year']}{ext}"
-        if output_path.exists() or download_edgar_document(filing["url"], output_path):
+        if output_path.exists() or download_document(filing["url"], output_path):
             downloaded.append(str(output_path))
 
     return {"symbol": symbol, "success": bool(downloaded), "items": items, "downloaded": downloaded,
             "error": None if downloaded else "Download failed"}
-
-
-# ── shared single/batch download engine ─────────────────────────
-
-def process_single(symbol: str, fetch_fn, label: str) -> None:
-    print(f"\n{'=' * 60}")
-    print(f"Fetching {label} for: {symbol}")
-    print("=" * 60)
-
-    result = fetch_fn(symbol)
-    print(f"\nResult: {'Success' if result['success'] else 'Failed'}")
-    if result.get("error"):
-        print(f"Error: {result['error']}")
-    if result.get("items"):
-        print(f"\nAvailable {label}:")
-        for item in result["items"]:
-            print(f"  - {item['year']}: {item.get('label', '')}")
-    if result.get("downloaded"):
-        print("\nDownloaded:")
-        for path in result["downloaded"]:
-            print(f"  - {path}")
-
-
-def process_batch(symbols: list[str], fetch_fn, *, limit: int | None = None, desc: str) -> dict:
-    if limit:
-        symbols = symbols[:limit]
-
-    results = {"success": [], "failed": []}
-    for symbol in tqdm(symbols, desc=desc):
-        result = fetch_fn(symbol)
-        if result["success"]:
-            results["success"].append({"symbol": symbol, "downloaded": result["downloaded"]})
-        else:
-            results["failed"].append({"symbol": symbol, "error": result.get("error")})
-    return results
-
-
-def save_summary(reports_dir: Path, results: dict) -> Path:
-    summary_path = reports_dir / "_download_summary.json"
-    summary_path.parent.mkdir(parents=True, exist_ok=True)
-    summary_path.write_text(json.dumps(results, indent=2))
-    return summary_path

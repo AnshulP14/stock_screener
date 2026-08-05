@@ -1,10 +1,4 @@
-"""Navigation index for NSE annual report PDFs. Since Indian reports have no
-statutory section numbering, headings are detected heuristically: the
-largest-font line on a page is that page's heading, filtered to drop
-paragraphs-set-large and non-heading noise, with consecutive same-heading
-pages merged into one section. Shared resolve/filings/outline/read_page/grep
-navigation lives in filing_backend.py; this module is just the PDF parser.
-"""
+"""Parse NSE annual-report PDFs for navigation."""
 
 from __future__ import annotations
 
@@ -18,9 +12,7 @@ from .backend import ALPHA, MAX_TITLE, MIN_ALPHA, FilingBackend, norm_heading
 
 REPORTS_DIR = DATA_DIR / "raw" / "nse" / "annual_reports"
 
-# Bumped whenever the extraction rule changes. An index written by an older rule holds
-# sections this module would no longer produce, and silently serving them is worse than
-# reparsing: the page ranges look valid but point at a different notion of "section".
+# Bump when extraction rules change so stale indexes are rebuilt.
 INDEX_VERSION = 2
 
 
@@ -108,16 +100,8 @@ _BACKEND = FilingBackend(
     quick_page_count=_quick_page_count,
 )
 
-txt_path = _BACKEND.txt_path
-index_path = _BACKEND.index_path
-_fy_of = _BACKEND.fy_of
-_reports = _BACKEND.reports
-resolve = _BACKEND.resolve
 build_index = _BACKEND.build_index
-_read_index = _BACKEND.read_index
-load_index = _BACKEND.load_index
 filings = _BACKEND.filings
 outline = _BACKEND.outline
 read_page = _BACKEND.read_page
 grep = _BACKEND.grep
-list_filings = _BACKEND.list_filings

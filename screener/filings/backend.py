@@ -1,15 +1,10 @@
-"""Shared navigation engine for annual report filings (NSE PDF, S&P HTML).
-
-Both formats reduce to the same shape: build a normalized `.txt` + page-offset
-index once, then serve resolve/filings/outline/read_page/grep off it. Only
-parsing (`parse`) and a cheap page-count fallback (`quick_page_count`) are
-format-specific -- see pdf_filings.py / html_filings.py.
-"""
+"""Shared annual-report navigation for NSE PDFs and S&P HTML filings."""
 
 from __future__ import annotations
 
 import json
 import re
+from bisect import bisect_right
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,29 +25,13 @@ def norm_heading(text: str) -> str:
     return WS.sub(" ", CONTD.sub(" ", ENUM.sub("", text))).strip(" .:-–—|")
 
 
-def _page_of(offsets: list[int], pos: int) -> int:
-    """Binary search: which page does a character offset fall on?"""
-    lo, hi = 0, len(offsets) - 1
-    while lo < hi:
-        mid = (lo + hi + 1) // 2
-        if offsets[mid] <= pos:
-            lo = mid
-        else:
-            hi = mid - 1
-    return lo + 1
-
-
 ParseFn = Callable[[Path], tuple[str, list[int], list[dict], dict]]
 QuickPageCountFn = Callable[[Path], int]
 
 
 @dataclass
 class FilingBackend:
-    """Navigation engine shared by pdf_filings.py and html_filings.py. Each format
-    supplies its own `parse` (full parse -> text/offsets/sections/meta) and
-    `quick_page_count` (page count without a full parse); everything else --
-    resolve, filings, outline, read_page, grep, and the on-disk index -- is identical.
-    """
+    """Navigate filings using format-specific parse and page-count functions."""
 
     reports_dir: Path
     index_version: int
@@ -77,9 +56,6 @@ class FilingBackend:
             return []
         return sorted(base.glob(f"{symbol.upper()}{self.glob_suffix}"),
                       key=lambda p: self.fy_of(p) or 0)
-
-    def list_filings(self, symbol: str, base_dir: Path | None = None) -> list[Path]:
-        return self.reports(symbol, base_dir)
 
     def resolve(self, symbol: str, fy: int | None = None, base_dir: Path | None = None) -> Path:
         """The filing for `fy`, or the most recent one on disk."""
@@ -192,7 +168,7 @@ class FilingBackend:
 
         positions = [lo + m.start() for m in re.finditer(pattern, text[lo:hi], re.IGNORECASE)]
         window = positions[offset:offset + limit]
-        hits = [{"page": _page_of(offsets, pos),
+        hits = [{"page": bisect_right(offsets, pos),
                  "excerpt": WS.sub(" ", text[max(0, pos - context):pos + context]).strip()}
                 for pos in window]
         shown = offset + len(hits)

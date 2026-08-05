@@ -1,8 +1,4 @@
-"""screener.market's _snp_universe -- previously discarded fetch_sp500_universe's
-company_name/gics_sector/gics_industry entirely, returning metadata=None. That
-silently dropped gics_sector/gics_industry before they ever reached the
-company JSON (see MarketConfig.metadata_fields / build_company_json).
-"""
+"""Tests for market-specific universe configuration."""
 
 from screener import market as market_mod
 

@@ -1,9 +1,4 @@
-"""Navigation index for S&P 10-K HTML filings. Headings are detected from the
-dominant body style (font size/weight): any line that stands apart from body
-text, filtered the same way as pdf_filings.py's PDF headings. Shared
-resolve/filings/outline/read_page/grep navigation lives in filing_backend.py;
-this module is just the HTML parser.
-"""
+"""Parse S&P 10-K HTML filings for navigation."""
 
 from __future__ import annotations
 
@@ -63,11 +58,7 @@ def _is_break(el) -> bool:
 
 
 def _strip_xbrl(root) -> None:
-    """Remove inline XBRL/iXBRL elements that clutter the text.
-
-    These elements carry data but not prose: ``<ix:nonnumeric>``,
-    ``<xbrli:unit>``, etc.  Also strip ``<script>`` and ``<style>``.
-    """
+    """Strip scripts and styles while preserving inline XBRL text."""
     # Collect all nodes to remove first (can't modify while iterating)
     to_remove: list = []
     for tag_name in ("script", "style"):
@@ -106,25 +97,8 @@ def _strip_xbrl(root) -> None:
             parent.remove(el)
 
 
-# ----------------------------------------------------------------------- page split
-
-def _page_lines(page_data: list) -> list[tuple[str, float | None, bool]]:
-    """Extract (text, size, bold) from one page's DOM elements."""
-    lines = []
-    for text, size, bold in page_data:
-        text = _WS.sub(" ", text).strip()
-        if text:
-            lines.append((text, size, bold))
-    return lines
-
-
 def doc_pages(htm_path: Path) -> list[list[tuple[str, float | None, bool]]]:
-    """Split the document into pages.
-
-    Each page is a list of ``(text, size_in_pt, is_bold)`` tuples.
-    Pages are delimited by ``page-break-***: always`` CSS and bare ``<hr>``.
-    When no page-break markers exist, the whole document becomes one page.
-    """
+    """Split HTML into pages of `(text, size, bold)` tuples."""
     tree = LH.parse(str(htm_path)).getroot()
     _strip_xbrl(tree)
 
@@ -162,11 +136,7 @@ def doc_pages(htm_path: Path) -> list[list[tuple[str, float | None, bool]]]:
 # ----------------------------------------------------------------------- body style
 
 def _body_style(pages: list[list[tuple[str, float | None, bool]]]) -> tuple[float, bool]:
-    """The dominant (size, bold) pair by character mass.
-
-    Returns ``(body_size_pt, is_body_bold)`` — the style that accounts for the
-    most characters when you measure size classes and bold vs non-bold.
-    """
+    """Return the font size and weight with the greatest character mass."""
     mass: dict[tuple[float, bool], int] = {}
     for lines in pages:
         for text, size, bold in lines:
@@ -182,11 +152,7 @@ def _body_style(pages: list[list[tuple[str, float | None, bool]]]) -> tuple[floa
 
 def _page_heading(lines: list[tuple[str, float | None, bool]],
                   body_size: float, body_bold: bool) -> tuple[str, float, bool] | None:
-    """The page's heading: the line set apart from body style.
-
-    A heading is any sized line (size > body, or same size but bold when body
-    is not) that passes the length and letter-count filters.
-    """
+    """Return the strongest line that differs from the body style."""
     best: tuple[str, float, bool] | None = None
     for text, size, bold in lines:
         if size is None:
@@ -238,11 +204,7 @@ def _sections_from_pages(pages: list[list[tuple[str, float | None, bool]]],
 # ----------------------------------------------------------------------- public API
 
 def parse_filing(htm_path: Path) -> tuple[str, list[int], list[dict], dict]:
-    """Parse a 10-K filing -> (full text, per-page offsets, sections, meta).
-
-    Single pass: split into pages, measure body style, find headings per page,
-    build sections, extract text per page.
-    """
+    """Return full text, page offsets, sections, and metadata for a 10-K."""
     pages = doc_pages(htm_path)
     body_style = _body_style(pages) if pages else (10.0, False)
 
@@ -293,16 +255,8 @@ _BACKEND = FilingBackend(
     quick_page_count=_quick_page_count,
 )
 
-_txt_path = _BACKEND.txt_path
-_index_path = _BACKEND.index_path
-_fy_of = _BACKEND.fy_of
-_reports = _BACKEND.reports
-resolve = _BACKEND.resolve
 build_index = _BACKEND.build_index
-_read_index = _BACKEND.read_index
-load_index = _BACKEND.load_index
 filings = _BACKEND.filings
 outline = _BACKEND.outline
 read_page = _BACKEND.read_page
 grep = _BACKEND.grep
-list_filings = _BACKEND.list_filings

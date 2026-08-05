@@ -1,13 +1,5 @@
 #!/usr/bin/env python3
-"""
-Rebuild data/screener.db from curated JSON files — thin wrapper over screener.db.
-
-Usage:
-    python scripts/build_db.py
-    python scripts/build_db.py --market nse
-    python scripts/build_db.py --market snp
-    python scripts/build_db.py --market all
-"""
+"""Rebuild data/screener.db from curated JSON."""
 
 import argparse
 

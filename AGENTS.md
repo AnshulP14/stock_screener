@@ -40,13 +40,13 @@ data/
 
 screener/
 ├── __init__.py
-├── annual_reports.py     # NSE (screener.in PDFs) + S&P500 (SEC EDGAR 10-Ks)
-│                         #   download logic, shared single/batch engine
+├── annual_reports.py     # NSE PDF + S&P 10-K download logic
 ├── cli.py                # data refresh CLI
 ├── config.py             # constants, paths, URLs
 ├── db.py                 # DuckDB: rebuild, query, drop tables
 ├── enrich.py             # screener.in enrichment
-├── fetch.py              # data fetching (yfinance, EDGAR)
+├── fetch.py              # NSE/S&P universes + yfinance fundamentals
+├── edgar.py              # SEC CIKs, XBRL facts, submissions + 10-K downloads
 ├── filings/              # filing navigation (PDF + HTML + shared backend)
 │   ├── __init__.py
 │   ├── backend.py        # FilingBackend dataclass + navigation logic

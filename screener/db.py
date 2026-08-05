@@ -1,7 +1,4 @@
-"""Rebuild data/screener.db from curated JSON + DuckDB SQL query utility.
-
-The logic behind scripts/build_db.py (rebuild) and scripts/query.py (query).
-"""
+"""Rebuild and query data/screener.db."""
 
 import json
 import sys
@@ -11,10 +8,9 @@ from pathlib import Path
 import duckdb
 import pandas as pd
 
-from .config import BUILD_DB_DB_PATH, INDICES_DIR, MANIFEST_PATH
+from .config import BUILD_DB_DB_PATH
 from .index import update_manifest
 from .market import NSE, SNP, MarketConfig
-
 
 # ── DuckDB query ────────────────────────────────────────────────────
 
@@ -43,15 +39,7 @@ def query(sql: str, csv: bool = False, market: str | None = None) -> None:
 # ── DB rebuild ──────────────────────────────────────────────────────
 
 def rebuild(market: str | MarketConfig = "all") -> dict:
-    """
-    Rebuild screener.db for one or both markets.
-
-    Args:
-        market: "nse", "snp", "all", or a MarketConfig instance
-
-    Returns:
-        dict with table names and row counts (only for markets actually rebuilt)
-    """
+    """Rebuild one or both markets and return their table row counts."""
     results = {}
     if isinstance(market, MarketConfig):
         targets = [market]
@@ -81,16 +69,7 @@ def rebuild_market_db(
     companies_dir: Path,
     indices_dir: Path,
 ) -> dict:
-    """Rebuild DuckDB tables for a single market.
-
-    Args:
-        market: "nse" or "snp"
-        companies_dir: directory containing company JSON files
-        indices_dir: directory containing screening_summary.json and industry_stats.json
-
-    Returns:
-        dict with table counts
-    """
+    """Rebuild one market's DuckDB tables and return their row counts."""
     summary_path = indices_dir / "screening_summary.json"
     companies_glob = str(companies_dir / "*.json")
     stats_path = indices_dir / "industry_stats.json"

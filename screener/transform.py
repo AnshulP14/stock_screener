@@ -1,112 +1,66 @@
-"""Transform raw fetch data into company JSONs with trends.
+"""Transform raw fetch data into company JSONs with trends."""
 
-Includes former trends.py: GrowthTrend, MarginDirection, LeverageBand StrEnums
-and classify_growth, classify_margin_direction, classify_leverage, yoy, cagr, average_roe.
-"""
-
-import math
 from datetime import date
-from enum import StrEnum
 from itertools import pairwise
 from typing import Any
 
 import pandas as pd
 
 from .market import NSE, MarketConfig
-
-
-def safe_float(v: Any) -> float | None:
-    """Convert to float; return None for invalid, NaN, or Inf."""
-    if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
-        return None
-    try:
-        f = float(v)
-        return f if not (math.isnan(f) or math.isinf(f)) else None
-    except (ValueError, TypeError):
-        return None
-
-
-from .statements import AnnualStatements
-from .statements import AnnualStatements
+from .statements import AnnualStatements, safe_float
 
 # ── Extractors ──────────────────────────────────────────────────────
 
 def build_current_snapshot(data: dict[str, Any], market: MarketConfig = NSE) -> dict:
-    """Build snapshot dict from yfinance info. `market` defaults to NSE;
-    real callers should pass it explicitly. Universe metadata
-    (isin/nse_industry/gics_sector/...) lives on the company JSON's top
-    level instead — see MarketConfig.metadata_fields."""
+    """Build a market-aware snapshot from Yahoo info."""
     info = data.get("info", {})
-    symbol = data["symbol"].replace(market.ticker_suffix, "")
 
-    metrics = {"symbol": symbol}
-    for f in (
-        "trailingPE", "forwardPE", "priceToBook", "pegRatio",
-        "enterpriseToEbitda", "enterpriseToRevenue", "priceToSalesTrailing12Months",
-        "returnOnEquity", "returnOnAssets", "profitMargins",
-        "grossMargins", "operatingMargins", "ebitdaMargins",
-        "debtToEquity", "currentRatio", "quickRatio", "beta",
-        "revenueGrowth", "earningsGrowth", "earningsQuarterlyGrowth",
-        "marketCap", "enterpriseValue", "totalRevenue",
-        "freeCashflow", "operatingCashflow", "ebitda", "grossProfits",
-        "trailingEps", "forwardEps", "bookValue", "revenuePerShare",
-        "dividendRate", "dividendYield", "payoutRatio",
-        "fullTimeEmployees", "sector", "industry",
-    ):
-        metrics[f] = info.get(f)
-
-    metrics["shortName"] = info.get("shortName")
-    metrics["longName"] = info.get("longName")
-    metrics["fetch_time"] = data.get("fetch_time", date.today().isoformat())
-    metrics["error"] = data.get("error")
-
-    # Return structured snapshot
     return {
-        "as_of": metrics["fetch_time"].split("T")[0],
+        "as_of": data.get("fetch_time", date.today().isoformat()).split("T")[0],
         "price_metrics": {
-            "trailing_pe": safe_float(metrics.get("trailingPE")),
-            "forward_pe": safe_float(metrics.get("forwardPE")),
-            "price_to_book": safe_float(metrics.get("priceToBook")),
-            "peg_ratio": safe_float(metrics.get("pegRatio")),
-            "price_to_sales": safe_float(metrics.get("priceToSalesTrailing12Months")),
-            "enterprise_to_ebitda": safe_float(metrics.get("enterpriseToEbitda")),
-            "enterprise_to_revenue": safe_float(metrics.get("enterpriseToRevenue")),
+            "trailing_pe": safe_float(info.get("trailingPE")),
+            "forward_pe": safe_float(info.get("forwardPE")),
+            "price_to_book": safe_float(info.get("priceToBook")),
+            "peg_ratio": safe_float(info.get("pegRatio")),
+            "price_to_sales": safe_float(info.get("priceToSalesTrailing12Months")),
+            "enterprise_to_ebitda": safe_float(info.get("enterpriseToEbitda")),
+            "enterprise_to_revenue": safe_float(info.get("enterpriseToRevenue")),
         },
         "profitability": {
-            "profit_margin": safe_float(metrics.get("profitMargins")),
-            "gross_margin": safe_float(metrics.get("grossMargins")),
-            "operating_margin": safe_float(metrics.get("operatingMargins")),
-            "ebitda_margin": safe_float(metrics.get("ebitdaMargins")),
-            "return_on_equity": safe_float(metrics.get("returnOnEquity")),
-            "return_on_assets": safe_float(metrics.get("returnOnAssets")),
+            "profit_margin": safe_float(info.get("profitMargins")),
+            "gross_margin": safe_float(info.get("grossMargins")),
+            "operating_margin": safe_float(info.get("operatingMargins")),
+            "ebitda_margin": safe_float(info.get("ebitdaMargins")),
+            "return_on_equity": safe_float(info.get("returnOnEquity")),
+            "return_on_assets": safe_float(info.get("returnOnAssets")),
         },
         "financial_health": {
-            "debt_to_equity": safe_float(metrics.get("debtToEquity")),
-            "current_ratio": safe_float(metrics.get("currentRatio")),
-            "quick_ratio": safe_float(metrics.get("quickRatio")),
-            "beta": safe_float(metrics.get("beta")),
+            "debt_to_equity": safe_float(info.get("debtToEquity")),
+            "current_ratio": safe_float(info.get("currentRatio")),
+            "quick_ratio": safe_float(info.get("quickRatio")),
+            "beta": safe_float(info.get("beta")),
         },
         "size": {
-            "market_cap": safe_float(metrics.get("marketCap")),
-            "enterprise_value": safe_float(metrics.get("enterpriseValue")),
-            "total_revenue": safe_float(metrics.get("totalRevenue")),
-            "employees": safe_float(metrics.get("fullTimeEmployees")),
+            "market_cap": safe_float(info.get("marketCap")),
+            "enterprise_value": safe_float(info.get("enterpriseValue")),
+            "total_revenue": safe_float(info.get("totalRevenue")),
+            "employees": safe_float(info.get("fullTimeEmployees")),
         },
         "dividends": {
-            "dividend_rate": safe_float(metrics.get("dividendRate")),
-            "dividend_yield": safe_float(metrics.get("dividendYield")),
-            "payout_ratio": safe_float(metrics.get("payoutRatio")),
+            "dividend_rate": safe_float(info.get("dividendRate")),
+            "dividend_yield": safe_float(info.get("dividendYield")),
+            "payout_ratio": safe_float(info.get("payoutRatio")),
         },
         "growth": {
-            "revenue_growth": safe_float(metrics.get("revenueGrowth")),
-            "earnings_growth": safe_float(metrics.get("earningsGrowth")),
-            "earnings_quarterly_growth": safe_float(metrics.get("earningsQuarterlyGrowth")),
+            "revenue_growth": safe_float(info.get("revenueGrowth")),
+            "earnings_growth": safe_float(info.get("earningsGrowth")),
+            "earnings_quarterly_growth": safe_float(info.get("earningsQuarterlyGrowth")),
         },
         "per_share": {
-            "trailing_eps": safe_float(metrics.get("trailingEps")),
-            "forward_eps": safe_float(metrics.get("forwardEps")),
-            "book_value": safe_float(metrics.get("bookValue")),
-            "revenue_per_share": safe_float(metrics.get("revenuePerShare")),
+            "trailing_eps": safe_float(info.get("trailingEps")),
+            "forward_eps": safe_float(info.get("forwardEps")),
+            "book_value": safe_float(info.get("bookValue")),
+            "revenue_per_share": safe_float(info.get("revenuePerShare")),
         },
     }
 
@@ -205,11 +159,7 @@ def build_historical_trends(data: dict[str, Any], market: MarketConfig = NSE) ->
 
 
 def build_historical_trends_edgar(facts: dict | None, market: MarketConfig | None = None) -> dict[str, Any]:
-    """Compute historical trends from SEC EDGAR XBRL companyfacts (S&P 500 only).
-
-    market defaults to SNP for backward compatibility with call sites that
-    predate the unified build_trends path.
-    """
+    """Build S&P historical trends from SEC companyfacts."""
     if market is None:
         from .market import SNP as _snp
         market = _snp
@@ -322,53 +272,30 @@ def build_company_json(
 # ── Trend classifiers (former trends.py) ────────────────────────────
 
 
-class GrowthTrend(StrEnum):
-    CONSISTENTLY_GROWING = "consistently_growing"
-    MOSTLY_GROWING = "mostly_growing"
-    DECLINING = "declining"
-    VOLATILE = "volatile"
-    INSUFFICIENT_DATA = "insufficient_data"
-
-
-def classify_growth(values: list[float | None]) -> GrowthTrend:
+def classify_growth(values: list[float | None]) -> str:
     clean = [v for v in values if v is not None]
     if len(clean) < 3:
-        return GrowthTrend.INSUFFICIENT_DATA
+        return "insufficient_data"
     ups = sum(1 for a, b in pairwise(clean) if b > a)
     if ups >= len(clean) - 1:
-        return GrowthTrend.CONSISTENTLY_GROWING
+        return "consistently_growing"
     if ups == 0:
-        return GrowthTrend.DECLINING
+        return "declining"
     if ups >= (len(clean) - 1) * 0.6:
-        return GrowthTrend.MOSTLY_GROWING
-    return GrowthTrend.VOLATILE
+        return "mostly_growing"
+    return "volatile"
 
 
-class MarginDirection(StrEnum):
-    EXPANDING = "expanding"
-    CONTRACTING = "contracting"
-    STABLE = "stable"
-    INSUFFICIENT_DATA = "insufficient_data"
-
-
-def classify_margin_direction(values: list[float | None]) -> MarginDirection:
+def classify_margin_direction(values: list[float | None]) -> str:
     clean = [v for v in values if v is not None]
     if len(clean) < 2:
-        return MarginDirection.INSUFFICIENT_DATA
+        return "insufficient_data"
     change = clean[-1] - clean[0]
     if change > 0.02:
-        return MarginDirection.EXPANDING
+        return "expanding"
     if change < -0.02:
-        return MarginDirection.CONTRACTING
-    return MarginDirection.STABLE
-
-
-class LeverageBand(StrEnum):
-    DEBT_FREE = "debt_free"
-    LOW = "low"
-    MODERATE = "moderate"
-    HIGH = "high"
-    INSUFFICIENT_DATA = "insufficient_data"
+        return "contracting"
+    return "stable"
 
 
 def yoy(values: list[float | None]) -> list[float | None]:
@@ -392,28 +319,25 @@ def cagr(values: list[float | None]) -> float | None:
 
 
 def average_roe(values: list[float | None], window: int = 3) -> float | None:
-    """Mean ROE over the trailing `window` fiscal years. Previously computed
-    as net-income CAGR standing in for an ROE average — a different metric
-    entirely, just because both happened to be "a number about profitability
-    over 3 years"."""
+    """Return mean ROE over the trailing fiscal-year window."""
     trailing = [v for v in values[-window:] if v is not None]
     if not trailing:
         return None
     return sum(trailing) / len(trailing)
 
 
-def classify_leverage(values: list[float | None]) -> LeverageBand:
+def classify_leverage(values: list[float | None]) -> str:
     """Band the *level* of the most recent debt/equity ratio — not a delta
     over time like classify_margin_direction. `values` must be the ratio
     (debt/equity), not raw debt."""
     clean = [v for v in values if v is not None]
     if not clean:
-        return LeverageBand.INSUFFICIENT_DATA
+        return "insufficient_data"
     latest = clean[-1]
     if latest < 0.05:
-        return LeverageBand.DEBT_FREE
+        return "debt_free"
     if latest < 0.5:
-        return LeverageBand.LOW
+        return "low"
     if latest < 1.5:
-        return LeverageBand.MODERATE
-    return LeverageBand.HIGH
+        return "moderate"
+    return "high"

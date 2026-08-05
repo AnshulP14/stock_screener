@@ -1,8 +1,4 @@
-"""Build indices: screening_summary + industry_stats + manifest management.
-
-Includes former store.py: load_company, save_company, merge_company,
-delete_company, list_symbols, iter_companies.
-"""
+"""Manage company JSON, indices, and the data manifest."""
 
 import json
 import threading
@@ -46,10 +42,7 @@ def save_company(dir_path: Path, symbol: str, data: dict) -> None:
 
 
 def merge_company(dir_path: Path, symbol: str, updates: dict) -> None:
-    """Read-modify-write a company JSON: shallow-merge `updates` into whatever
-    is already on disk (or {} if none) instead of overwriting the whole file.
-    Lets independent stages (fundamentals, shareholding, ratings) each own
-    their own top-level keys without clobbering each other."""
+    """Atomically shallow-merge updates into a company JSON."""
     with _lock_for(symbol):
         try:
             existing = load_company(dir_path, symbol)
@@ -70,10 +63,7 @@ def list_symbols(dir_path: Path) -> list[str]:
 
 
 def iter_companies(dir_path: Path) -> Iterator[tuple[Path, dict]]:
-    """Yield (path, company_dict) for every company file.
-
-    Skips unreadable files (bad JSON, permission errors) rather than
-    crashing the whole iteration."""
+    """Yield readable `(path, company)` pairs."""
     for path in sorted(dir_path.glob("*.json")):
         try:
             yield path, json.loads(path.read_text())
@@ -88,19 +78,7 @@ def build_indices(
     companies_dir: Path,
     indices_dir: Path = INDICES_DIR,
 ) -> dict | None:
-    """Build screening_summary.json and industry_stats.json from company
-    JSONs, and write each company's own industry_comparison back onto its
-    file -- that needs every company loaded first (see
-    screener.summary.compute_industry_comparison), so it can't happen at
-    per-symbol fetch time the way the rest of the company JSON is built.
-
-    Args:
-        companies_dir: directory of per-company JSON files
-        indices_dir: directory to write screening_summary.json and industry_stats.json
-
-    Returns:
-        dict with summary count, industry count, and company count
-    """
+    """Build summary and industry indices, then update company comparisons."""
     print("  Building indices...")
     loaded = list(iter_companies(companies_dir))
 
@@ -155,11 +133,7 @@ def build_indices(
 
 
 def update_manifest(market: str, entry: dict, *, touch_generated_at: bool = True) -> None:
-    """Merge `entry` into data/manifest.json under `market`, preserving existing
-    keys (e.g. a `db` rebuild shouldn't wipe out `total_companies` written by the
-    last fetch run, and vice versa). `generated_at` tracks data freshness — pass
-    touch_generated_at=False for updates (like a DB rebuild) that aren't a data
-    refresh, so it keeps reflecting the last real fetch/transform run."""
+    """Merge a market manifest entry, optionally updating its generation time."""
     manifest: dict = {}
     if MANIFEST_PATH.exists():
         try:

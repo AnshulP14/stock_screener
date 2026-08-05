@@ -1,17 +1,23 @@
-"""AnnualStatements — typed year -> line-item adapter over yfinance's three
-raw annual DataFrames (income, balance sheet, cashflow). Looks up each line
-item by its own fiscal year rather than positional zip, so a year missing
-from one statement doesn't shift every later value out of alignment.
-"""
+"""Year-aligned annual statements from Yahoo or SEC EDGAR."""
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import date
+from typing import Any
 
 import pandas as pd
 
-from .transform import safe_float as _safe_float
+
+def safe_float(value: Any) -> float | None:
+    """Convert to a finite float, or return None."""
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _process_annual_statement(
@@ -35,7 +41,7 @@ def _cell(df: pd.DataFrame, label: str, year: int) -> float | None:
     value = df.loc[label, year]
     if isinstance(value, pd.Series):
         value = value.iloc[0]
-    return _safe_float(value)
+    return safe_float(value)
 
 
 @dataclass(frozen=True)
@@ -64,11 +70,7 @@ _FIELD_SOURCES = [
     ("stockholders_equity", "balance", "Stockholders Equity"),
 ]
 
-# field name -> candidate SEC XBRL us-gaap tags, in priority order. More than
-# one tag exists per concept because filers change tags over time (e.g.
-# Apple filed revenue under SalesRevenueNet through FY2017, then switched to
-# RevenueFromContractWithCustomerExcludingAssessedTax from FY2018 onward) --
-# the only place these tag names appear.
+# Candidate SEC tags are ordered so later aliases only fill missing years.
 _EDGAR_FIELD_TAGS: dict[str, tuple[str, ...]] = {
     "revenue": (
         "RevenueFromContractWithCustomerExcludingAssessedTax",
@@ -87,11 +89,8 @@ _EDGAR_FIELD_TAGS: dict[str, tuple[str, ...]] = {
 
 
 def _edgar_annual_values(tag_facts: dict) -> dict[int, float]:
-    """fiscal year -> value, from one GAAP tag's annual entries. Keyed by
-    EDGAR's own `fy` (only `form == "10-K"` and `fp == "FY"` entries count);
-    when a tag carries two entries for the same fy, the most recently filed
-    wins."""
-    best: dict[int, tuple[str, float]] = {}
+    """Return fiscal-year values from a GAAP tag's annual 10-K entries."""
+    periods: dict[str, list[dict]] = {}
     for unit_values in tag_facts.get("units", {}).values():
         for entry in unit_values:
             if entry.get("form") != "10-K" or entry.get("fp") != "FY":
@@ -99,17 +98,25 @@ def _edgar_annual_values(tag_facts: dict) -> dict[int, float]:
             fy, val = entry.get("fy"), entry.get("val")
             if fy is None or val is None:
                 continue
-            filed = entry.get("filed", "")
-            if fy not in best or filed > best[fy][0]:
-                best[fy] = (filed, val)
-    return {fy: val for fy, (_, val) in best.items()}
+            start, end = entry.get("start"), entry.get("end")
+            if start and end:
+                try:
+                    if (date.fromisoformat(end) - date.fromisoformat(start)).days < 300:
+                        continue
+                except ValueError:
+                    pass
+            periods.setdefault(end or f"fy:{fy}", []).append(entry)
+
+    values = {}
+    for entries in periods.values():
+        first = min(entries, key=lambda entry: entry.get("filed", ""))
+        latest = max(entries, key=lambda entry: entry.get("filed", ""))
+        values[int(first["fy"])] = latest["val"]
+    return values
 
 
 def _edgar_field_values(us_gaap: dict, field: str) -> dict[int, float]:
-    """Merge a field's candidate tags in priority order: a year already
-    filled by an earlier tag in the list is not overwritten by a later one,
-    but a year missing from the first tag can still be filled by a later one
-    -- the case a filer renaming its tag partway through its history needs."""
+    """Merge candidate tags by priority, filling only missing years."""
     values: dict[int, float] = {}
     for tag in _EDGAR_FIELD_TAGS[field]:
         tag_facts = us_gaap.get(tag)
@@ -143,16 +150,7 @@ class AnnualStatements:
         cashflow: pd.DataFrame,
         fiscal_year_fn: Callable[[pd.Timestamp], int],
     ) -> AnnualStatements:
-        """years_available stays anchored to the income statement's fiscal
-        years (matching the pre-existing contract); balance/cashflow are
-        looked up per-year against that anchor, not zipped positionally.
-
-        fiscal_year_fn has no default -- the pre-unification code hardcoded
-        NSE's Apr-Mar rule regardless of market, which would have mislabeled
-        every US company's years_available once real S&P data existed
-        (US fiscal years are labeled by the calendar year they end in, no
-        adjustment). Callers must be explicit about which market's rule
-        applies; see MarketConfig.fiscal_year in screener.market."""
+        """Align Yahoo statements to income-statement fiscal years."""
         income = _process_annual_statement(income, fiscal_year_fn)
         balance = _process_annual_statement(balance, fiscal_year_fn)
         cashflow = _process_annual_statement(cashflow, fiscal_year_fn)
@@ -169,13 +167,7 @@ class AnnualStatements:
 
     @classmethod
     def from_edgar(cls, facts: dict | None) -> AnnualStatements:
-        """facts is the raw SEC XBRL companyfacts payload (see
-        screener.fetch.fetch_edgar_facts) -- {facts: {"us-gaap": {TAG:
-        {units: {...}}}}}. Only the fields SNP's historical_trends actually
-        uses are extracted (see _EDGAR_FIELD_TAGS); total_debt/
-        stockholders_equity/free_cash_flow have no EDGAR tag mapping here and
-        stay None, since those trends aren't computed for SNP (see
-        data/SCHEMA.md's historical_trends metric table)."""
+        """Extract supported annual fields from SEC companyfacts."""
         us_gaap = (facts or {}).get("facts", {}).get("us-gaap", {})
         per_field = {field: _edgar_field_values(us_gaap, field) for field in _EDGAR_FIELD_TAGS}
 

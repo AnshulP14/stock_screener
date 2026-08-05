@@ -1,11 +1,4 @@
-"""screener.summary -- the flat screening_summary schema and industry
-percentile computation, split out of index.py's build_indices so the schema
-is declared once (screener.summary.NUMERIC_COLUMNS/TEXT_COLUMNS) instead of
-being assembled inline inside build_indices' loop body.
-
-Also covers Phase 6's new compute_industry_comparison -- previously always
-None at the build_company_json call site, with zero writers anywhere.
-"""
+"""Tests for flat summaries and industry comparisons."""
 
 import pytest
 

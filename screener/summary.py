@@ -1,12 +1,9 @@
-"""ScreeningSummary -- the flat screening_summary.json/{nse,snp} DB table
-schema, plus the industry-percentile computation that both the flat table
-and each company's own industry_comparison read from.
-"""
+"""Flat screening summaries and industry percentiles."""
 
 from collections.abc import Callable
 from typing import Any
 
-from .transform import safe_float as _safe_float
+from .statements import safe_float as _safe_float
 
 
 def _percentile(value, sorted_values):
@@ -53,10 +50,7 @@ TEXT_COLUMNS: list[tuple[str, Callable[[dict], Any]]] = [
     ("cik", lambda c: c.get("cik")),
 ]
 
-# Coerced through _safe_float. pct_insider/pct_institutional/cik are SNP-only
-# in practice (no writer populates them for NSE) but always present as keys,
-# null on the NSE side -- matching the existing promoter_*/fii_* convention
-# below for the reverse case (NSE-only, null on SNP).
+# Market-specific numeric fields stay present as nulls in the other market.
 NUMERIC_COLUMNS: list[tuple[str, Callable[[dict], Any]]] = [
     ("market_cap", _snapshot("size", "market_cap")),
     ("trailing_pe", _snapshot("price_metrics", "trailing_pe")),
@@ -73,11 +67,7 @@ NUMERIC_COLUMNS: list[tuple[str, Callable[[dict], Any]]] = [
     ("pct_institutional", _ownership("pct_institutional")),
 ]
 
-# (current_snapshot/historical_trends source, flat-table percentile column
-# name) -- drives both the flat table's <key>_percentile columns and
-# industry_stats' per-metric bands. Kept separate from industry_comparison's
-# own metric names below since the flat table's names (pe, margin) predate
-# this split and queries/docs already depend on them.
+# Source fields mapped to stable flat-table percentile names.
 METRICS_FOR_PERCENTILE: list[tuple[str, str, str]] = [
     ("price_metrics", "trailing_pe", "pe"),
     ("price_metrics", "forward_pe", "forward_pe"),
@@ -94,20 +84,12 @@ METRICS_FOR_PERCENTILE: list[tuple[str, str, str]] = [
 
 _SHAREHOLDING_HOLDERS = ("promoter", "fii", "dii", "public")
 
-# industry_comparison (data/SCHEMA.md) names two of METRICS_FOR_PERCENTILE's
-# metrics differently (pe -> trailing_pe, margin -> profit_margin); everything
-# else already matches. Keeping one (group, field, key) list -- rather than a
-# second full copy with its own names -- is what compute_industry_comparison
-# below looks up industry_stats with; a second copy previously drifted out of
-# sync with the first (wrong keys, silently None metrics).
+# Company comparison aliases for two legacy percentile names.
 _INDUSTRY_COMPARISON_NAMES = {"pe": "trailing_pe", "margin": "profit_margin"}
 
 
 def compute_industry_stats(companies: list[dict]) -> dict:
-    """Per-industry percentile bands for every METRICS_FOR_PERCENTILE metric.
-    A metric needs at least 2 peer values to produce stats; below that
-    (common for S&P's fine-grained GICS sub-industries -- see
-    compute_industry_comparison) it's None."""
+    """Compute per-industry percentiles for metrics with at least two peers."""
     groups: dict[str, list[dict]] = {}
     for c in companies:
         groups.setdefault(c.get("industry", "Unknown"), []).append(c)
@@ -171,16 +153,7 @@ def compute_summary_row(company: dict, industry_stats: dict) -> dict:
 
 
 def compute_industry_comparison(company: dict, industry_stats: dict) -> dict:
-    """A company's own percentile-vs-peers block (data/SCHEMA.md's
-    industry_comparison) -- written back onto the company's own JSON by
-    index.build_indices, for both markets.
-
-    vs_median is a relative difference ((value - median) / abs(median)), not
-    an absolute one, so it's comparable across metrics of very different
-    scale (a PE ratio vs. a margin). A metric is None when its industry has
-    fewer than 2 peer values for it (see compute_industry_stats) -- common
-    for S&P's fine-grained GICS sub-industries, several of which have only
-    one constituent."""
+    """Compare a company with peers using percentiles and relative median gaps."""
     ind = company.get("industry", "Unknown")
     stats = industry_stats.get(ind, {})
     ind_metrics = stats.get("metrics", {})

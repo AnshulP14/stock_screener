@@ -1,17 +1,9 @@
-"""screener.freshness — the single staleness definition shared by both market
-pipelines and the enrichment batch (previously five/seven duplicated,
-inconsistent implementations across nse.py/us.py/enrich.py).
-
-Quarter-boundary dates below are worked by hand against the documented 45-day
-post-quarter-end lag, not derived by re-running the code under test:
-  - Dec 31 quarter-end clears its lag on Feb 14 (45 days later).
-  - Mar 31 quarter-end clears its lag on May 15 (45 days later).
-"""
+"""Tests for shared data staleness policies."""
 
 import json
 from datetime import date
 
-from screener.freshness import AgeDays, NSE, QuarterLag, expected_latest_quarter, stale_symbols
+from screener.freshness import AgeDays, QuarterLag, expected_latest_quarter, stale_symbols
 
 # ── expected_latest_quarter ─────────────────────────────────────────
 
@@ -38,7 +30,7 @@ def test_quarter_lag_day_before_may_boundary_still_prior_quarter():
 # ── stale_symbols: QuarterLag policy ────────────────────────────────
 
 def _quarter_policy():
-    return QuarterLag(field=("shareholding", "quarters", -1), market=NSE)
+    return QuarterLag(field=("shareholding", "quarters", -1))
 
 
 def test_missing_company_file_is_stale_under_quarter_policy(tmp_path):

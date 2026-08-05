@@ -1,21 +1,18 @@
-"""screener.statements — AnnualStatements/AnnualLineItems, the typed
-year -> line-item adapter over yfinance's three raw annual DataFrames.
-
-build_historical_trends previously zipped values from different DataFrames
-positionally (e.g. net_income from annual_income, stockholders_equity from
-annual_balance) rather than looking each up by its own fiscal year. That's
-silently wrong whenever the two statements don't cover the same year set --
-reproduced below with income covering FY2022-2024 and balance covering only
-FY2023-2024, a real yfinance pattern (e.g. restated/unavailable balance-sheet
-history near an IPO).
-"""
+"""Tests for fiscal-year-aligned annual statements."""
 
 import pandas as pd
 
 from screener.market import NSE, SNP
-from screener.statements import AnnualLineItems, AnnualStatements
+from screener.statements import AnnualLineItems, AnnualStatements, safe_float
 
 FY_ENDS = [pd.Timestamp("2022-03-31"), pd.Timestamp("2023-03-31"), pd.Timestamp("2024-03-31")]
+
+
+def test_safe_float_rejects_missing_and_non_finite_values():
+    assert safe_float("12.5") == 12.5
+    assert safe_float(None) is None
+    assert safe_float(float("nan")) is None
+    assert safe_float(float("inf")) is None
 
 
 # ── AnnualStatements built from literals ────────────────────────────
@@ -197,6 +194,32 @@ def test_from_edgar_restated_entry_for_same_year_keeps_the_latest_filed():
     ]}})
     stmts = AnnualStatements.from_edgar(facts)
     assert stmts.net_income == [105.0]
+
+
+def test_from_edgar_uses_period_year_not_comparative_filings_fy():
+    """Companyfacts repeats prior periods under each later filing's `fy`."""
+    facts = _facts(Revenues={"units": {"USD": [
+        {**_entry(2023, 383.0, filed="2023-11-03"),
+         "start": "2022-09-25", "end": "2023-09-30"},
+        {**_entry(2024, 383.0, filed="2024-11-01"),
+         "start": "2022-09-25", "end": "2023-09-30"},
+        {**_entry(2025, 383.0, filed="2025-10-31"),
+         "start": "2022-09-25", "end": "2023-09-30", "frame": "CY2023"},
+        {**_entry(2024, 391.0, filed="2024-11-01"),
+         "start": "2023-10-01", "end": "2024-09-28"},
+        {**_entry(2025, 391.0, filed="2025-10-31"),
+         "start": "2023-10-01", "end": "2024-09-28", "frame": "CY2024"},
+        {**_entry(2025, 416.0, filed="2025-10-31"),
+         "start": "2024-09-29", "end": "2025-09-27", "frame": "CY2025"},
+        # Some 10-K companyfacts entries are quarterly durations despite fp=FY.
+        {**_entry(2025, 100.0, filed="2025-10-31"),
+         "start": "2025-06-29", "end": "2025-09-27", "frame": "CY2025Q3"},
+    ]}})
+
+    stmts = AnnualStatements.from_edgar(facts)
+
+    assert stmts.years == [2023, 2024, 2025]
+    assert stmts.revenue == [383.0, 391.0, 416.0]
 
 
 def test_from_edgar_missing_tag_entirely_is_all_none():

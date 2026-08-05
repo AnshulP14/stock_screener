@@ -1,10 +1,4 @@
-"""Single staleness definition shared by both market pipelines and the
-enrichment batch. Previously seven separate, partly-inconsistent
-implementations across markets/nse.py, markets/us.py, and enrich.py — see
-the commit introducing this module for the full inventory and the two
-behavioral discrepancies (inclusive vs exclusive day comparison, and how
-"never fetched" was detected) that had to be reconciled to unify them.
-"""
+"""Shared staleness policies for market data and enrichment."""
 
 from __future__ import annotations
 
@@ -12,22 +6,15 @@ import json
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, timedelta
-
 from pathlib import Path
 
 _SENTINEL = object()
 
 
-NSE = "nse"
-
-
 @dataclass(frozen=True)
 class QuarterLag:
-    """Stale when the value at `field` isn't the latest quarter expected to
-    be available `lag_days` after quarter-end."""
+    """Stale when `field` is behind the latest expected NSE quarter."""
     field: tuple[str | int, ...]
-    market: str = NSE
-    lag_days: int = 45
 
 
 @dataclass(frozen=True)
@@ -57,7 +44,7 @@ def _quarter_key(label: str) -> tuple[int, int] | None:
         return None
 
 
-def expected_latest_quarter(market: str | None = None, today: date | None = None) -> str:
+def expected_latest_quarter(today: date | None = None) -> str:
     """Latest fiscal quarter whose data should be available, given NSE's reporting lag."""
     today = today or date.today()
     ends = [
@@ -93,10 +80,7 @@ def is_stale(company: dict, policy: Policy, today: date | None = None) -> bool:
     if isinstance(policy, QuarterLag):
         expected = expected_latest_quarter(today=today)
         value_key, expected_key = _quarter_key(value), _quarter_key(expected)
-        # lag_days is a conservative floor -- real disclosed data is often
-        # already ahead of it (e.g. NSE's actual ~21-day filing deadline vs.
-        # the 45-day default here). Only behind-expected counts as stale;
-        # an unparseable label falls back to exact match.
+        # Only behind-expected data is stale; malformed labels use exact match.
         if value_key is None or expected_key is None:
             return value != expected
         return value_key < expected_key
@@ -113,15 +97,7 @@ def stale_symbols(
     symbols: Iterable[str] | None = None,
     today: date | None = None,
 ) -> list[str]:
-    """Symbols whose company JSON is stale under `policy` (single or list).
-
-    When `symbols` is given, it's the full universe to check (a symbol with no
-    file yet counts as stale — this is how a never-fetched ticker is caught).
-    If omitted, falls back to globbing `companies_dir/*.json`.
-
-    Pass a list of policies to check all at once — each file is read once and
-    checked against every policy, rather than re-reading per policy.
-    """
+    """Return symbols stale under any policy; missing files are stale."""
     policies = list(policy) if isinstance(policy, (list, tuple)) else [policy]
     if symbols is None:
         symbols = sorted(p.stem for p in companies_dir.glob("*.json"))

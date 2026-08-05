@@ -1,8 +1,4 @@
-"""Concurrent fetch→save engine shared by both market pipelines. Each
-company is transformed and written as its fetch completes (durable against
-crashes/Ctrl-C), on a thread pool throttled by a shared adaptive rate
-limiter, with one bad ticker failing only that ticker.
-"""
+"""Concurrent fetch-and-save engine with adaptive rate limiting."""
 
 import random
 import threading
@@ -39,14 +35,7 @@ def is_rate_limit_error(err: str | None) -> bool:
 
 
 class AdaptiveRateLimiter:
-    """Enforces a minimum interval between request starts across all threads.
-
-    The interval widens when the upstream signals throttling and decays back
-    toward the baseline after a streak of clean responses, so a run that trips
-    a host's rate limiter slows down instead of burning through the rest of
-    the batch collecting 429s. One instance per rate-limited host (yfinance,
-    SEC EDGAR, screener.in each get their own).
-    """
+    """Adapt the minimum request interval to upstream throttling."""
 
     def __init__(self, base_interval: float = RATE_LIMIT_DELAY,
                  max_penalty: float = RATE_LIMIT_MAX_PENALTY,
@@ -109,10 +98,7 @@ class RunReport:
 
 
 def write_failure_log(path: Path, failures: list[tuple[str, str]]) -> None:
-    """Persist failed symbols so they can be retried with --symbols.
-
-    Always rewritten (including to empty) so a clean run clears stale entries.
-    """
+    """Rewrite the failed-symbol log for targeted retries."""
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"{sym}: {err}" for sym, err in failures]
     path.write_text("\n".join(lines) + ("\n" if lines else ""))
@@ -131,12 +117,7 @@ def run_fetch_pipeline(
     progress_every: int = 25,
     label: str = "symbols",
 ) -> RunReport:
-    """Fetch, transform and persist each symbol concurrently.
-
-    `fetch_fn` returns a raw dict (may carry a non-None "error" key); `handle_fn`
-    does the transform + write per successful fetch, so results become durable
-    immediately. Returns a RunReport of saved records and (symbol, error) failures.
-    """
+    """Fetch and handle symbols concurrently, returning saves and failures."""
     report = RunReport()
     if not symbols:
         return report

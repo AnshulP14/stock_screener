@@ -1,14 +1,4 @@
-"""build_current_snapshot's field list previously omitted "beta", so
-financial_health.beta was always null even though yfinance's `info` blob
-carries it and the DB schema already had a column for it. Regression test
-for that fix.
-
-Also covers the Phase 4 market_cap/currency unification: build_current_snapshot
-and build_company_json used to hardcode "INR"/market_cap_inr regardless of
-market, so every S&P profile would have been mislabeled INR once data/snp/
-existed. market defaults to NSE (preserving every pre-existing call site
-above), but snp.py now passes market=SNP explicitly.
-"""
+"""Tests for market-aware company transforms."""
 
 import pandas as pd
 import pytest

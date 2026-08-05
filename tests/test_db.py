@@ -1,7 +1,6 @@
-"""_rebuild_db was 95 lines with zero callers — the only code that dropped
-stale tables. Phase 0 deleted it and moved that behavior into
-drop_market_tables, called from screener.db.rebuild whenever a market's
-curated JSON no longer exists on disk."""
+"""Tests for DuckDB rebuild behavior."""
+
+import json
 
 import duckdb
 
@@ -31,3 +30,45 @@ def test_drop_market_tables_is_idempotent_when_absent(tmp_path, monkeypatch):
     monkeypatch.setattr(db_mod, "BUILD_DB_DB_PATH", db_path)
 
     db_mod.drop_market_tables("snp")  # must not raise
+
+
+def test_rebuild_market_db_creates_the_complete_query_surface(tmp_path, monkeypatch):
+    db_path = tmp_path / "screener.db"
+    companies_dir = tmp_path / "companies"
+    indices_dir = tmp_path / "indices"
+    companies_dir.mkdir()
+    indices_dir.mkdir()
+    (companies_dir / "AAPL.json").write_text(json.dumps({
+        "symbol": "AAPL",
+        "currency": "USD",
+        "current_snapshot": {"size": {"market_cap": 3e12}},
+    }))
+    (indices_dir / "screening_summary.json").write_text(json.dumps({
+        "companies": [{"symbol": "AAPL", "currency": "USD", "market_cap": 3e12}],
+    }))
+    (indices_dir / "industry_stats.json").write_text(json.dumps({
+        "Software": {"company_count": 1, "metrics": {}},
+    }))
+    manifest_updates = []
+    monkeypatch.setattr(db_mod, "BUILD_DB_DB_PATH", db_path)
+    monkeypatch.setattr(
+        db_mod, "update_manifest",
+        lambda market, entry, **kwargs: manifest_updates.append((market, entry, kwargs)),
+    )
+
+    result = db_mod.rebuild_market_db(
+        market="snp", companies_dir=companies_dir, indices_dir=indices_dir,
+    )
+
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        counts = {
+            table: con.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in ("snp", "snp_companies", "snp_industry_stats")
+        }
+    finally:
+        con.close()
+    assert counts == {"snp": 1, "snp_companies": 1, "snp_industry_stats": 1}
+    assert result["tables"] == counts
+    assert manifest_updates[0][0] == "snp"
+    assert manifest_updates[0][2] == {"touch_generated_at": False}

@@ -1,10 +1,4 @@
-"""
-Market-specific data pipeline orchestration.
-
-run_pipeline is the single engine for both markets, driven entirely by the
-MarketConfig passed in (screener.market.NSE / screener.market.SNP) -- see
-screener.cli for the CLI that calls it.
-"""
+"""Run the shared market data pipeline."""
 
 import json
 import queue
@@ -14,8 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
-from screener.filings import html_filings as hf
-from screener.filings import pdf_filings as pf
 from screener.annual_reports import (
     NSE_REPORTS_DIR,
     SNP_REPORTS_DIR,
@@ -26,13 +18,22 @@ from screener.annual_reports import (
 )
 from screener.config import MAX_WORKERS, ROOT
 from screener.db import rebuild as rebuild_db
+from screener.edgar import build_cik_map, fetch_facts
 from screener.enrich import get_stale_symbols, process_symbol_full
-from screener.fetch import build_cik_map, fetch_edgar_facts, fetch_ticker_data
+from screener.fetch import fetch_ticker_data
+from screener.filings import html_filings as hf
+from screener.filings import pdf_filings as pf
 from screener.freshness import stale_symbols
-from screener.index import build_indices, update_manifest
-from screener.market import MarketConfig
+from screener.index import (
+    build_indices,
+    delete_company,
+    iter_companies,
+    list_symbols,
+    merge_company,
+    update_manifest,
+)
+from screener.market import ALL_MODES, MarketConfig
 from screener.runner import run_fetch_pipeline, write_failure_log
-from screener.index import delete_company, iter_companies, list_symbols, merge_company
 from screener.transform import (
     build_company_json,
     build_current_snapshot,
@@ -42,20 +43,8 @@ from screener.transform import (
 )
 
 
-def _stale_symbols_for(companies_dir: Path, symbols: list[str], policies) -> list[str]:
-    """A symbol refetches if any of `policies` flag it.
-
-    Delegates to freshness.stale_symbols which now accepts a list of policies
-    and reads each file once regardless."""
-    return stale_symbols(companies_dir, policies, symbols=symbols)
-
-
 def _rank_by_mcap(indices_dir: Path, universe: set[str]) -> list[str]:
-    """`universe` ordered by market cap descending (from the existing
-    screening_summary.json, if any), with symbols that have no cap data yet
-    (new listings, or a fresh bootstrap with no summary at all) appended
-    after -- so capping this list to N always yields something, even before
-    a single company has ever been fetched."""
+    """Order symbols by known market cap, then append unknowns."""
     summary_path = indices_dir / "screening_summary.json"
     ranked: list[str] = []
     if summary_path.exists():
@@ -80,11 +69,7 @@ def _coverage(companies_dir: Path, predicate) -> float:
 
 
 def _write_manifest(market: MarketConfig, companies_dir: Path) -> None:
-    """Update data/manifest.json after pipeline run. Doesn't touch `db` --
-    this pipeline never rebuilds screener.db; rebuild_market_db owns that key.
-
-    Enrichment coverage is config-driven off the same fields that gate the
-    enrichment steps themselves, not a hardcoded per-market list."""
+    """Update company and enrichment coverage without touching DB metadata."""
     entry: dict[str, int | float] = {"total_companies": len(list_symbols(companies_dir))}
 
     for dataset in market.enrichment_datasets:
@@ -107,18 +92,7 @@ def _finish(market: MarketConfig, companies_dir: Path, start: float, *, skipped:
     return {"fetched": 0, "failed": 0, "skipped": skipped, "elapsed": elapsed}
 
 
-# ── Stage B/C consumers: drain the "fundamentals just landed" queue ───────
-#
-# Stage A (fundamentals) pushes a symbol the instant its file is written, so
-# these run concurrently with Stage A instead of waiting for it to finish --
-# each symbol is enriched/report-checked as soon as it's safe to (its file
-# already exists), no batching, one symbol handled and forgotten at a time.
-# A `None` sentinel on the queue ends the consumer loop.
-#
-# Report download+indexing (Stage C) is handed off to `report_pool` instead
-# of run inline: it's the slow leg (network download of a PDF/10-K), and
-# nothing downstream (indices, screener.db) actually depends on it -- it
-# would otherwise gate a fast DB rebuild behind a slow scrape for no reason.
+# Consumers enrich each saved symbol; report downloads run off the critical path.
 
 def _nse_consumer(
     q: "queue.Queue[str | None]", companies_dir: Path, fetch_reports: bool, report_pool: ThreadPoolExecutor,
@@ -179,20 +153,7 @@ def _fetch_and_save(
     targeted: bool = False,
     fetch_reports: bool = True,
 ) -> dict:
-    """Fetch, transform and persist `symbols`, then rebuild indices/DB.
-    Shared by every mode that ends in an actual fetch (sync-universe, full,
-    quick, incremental, targeted).
-
-    Stage A (fundamentals) runs concurrently with Stage B (shareholding/
-    credit-ratings, NSE) and Stage C (annual report / 10-K download+index):
-    each symbol is handed off the instant its fundamentals file lands, via a
-    queue, rather than B/C waiting for the whole Stage A batch to finish.
-
-    targeted: True for a --symbols run -- restricts B/C to just the
-    requested symbols instead of also sweeping the rest of companies_dir for
-    unrelated staleness (shareholding/reports roll over on their own, slower
-    cadence, so they're independently stale-checked on every full/incremental
-    run -- but not on a single-symbol retry)."""
+    """Fetch and persist symbols, run enrichment, then rebuild indices and DB."""
     companies_dir = market.companies_dir
     indices_dir = market.indices_dir
 
@@ -227,12 +188,12 @@ def _fetch_and_save(
     def handle(sym: str, raw: dict) -> dict:
         if market.uses_edgar:
             cik = cik_map.get(sym)
-            trends = build_historical_trends_edgar(fetch_edgar_facts(sym, cik), market)
+            trends = build_historical_trends_edgar(fetch_facts(sym, cik), market)
         else:
             cik = None
             trends = build_historical_trends(raw, market)
         institutional_ownership = (
-            build_institutional_ownership(raw) if market.fetch_institutional_holders else None
+            build_institutional_ownership(raw) if market.uses_edgar else None
         )
         company = build_company_json(
             sym, raw, metadata, trends, market=market,
@@ -247,12 +208,12 @@ def _fetch_and_save(
         symbols,
         fetch_fn=lambda s: fetch_ticker_data(
             f"{s}{market.ticker_suffix}",
-            institutional_holders=market.fetch_institutional_holders,
+            institutional_holders=market.uses_edgar,
             annual_statements=not market.uses_edgar,
         ),
         handle_fn=handle,
         workers=workers,
-        label=market.fetch_label,
+        label="companies",
     )
     results, failed = report.saved, report.failed
     write_failure_log(market.failed_tickers_path, failed)
@@ -322,31 +283,9 @@ def run_pipeline(
     days_old: int = 7,
     fetch_reports: bool = True,
 ) -> dict:
-    """Shared orchestration engine for both NSE500 and S&P500 pipelines.
-
-    Every market-specific behavior (universe fetching, staleness policy,
-    ticker suffix, optional enrichment/CSV steps) comes from `market` -- see
-    screener.market.NSE / screener.market.SNP.
-
-    Both modes always sync the universe first (fetch the live constituent
-    list, delete anything dropped from it) before deciding which survivors
-    to fetch -- there's no separate "just sync, don't fetch" mode, since a
-    symbol with no file yet is automatically stale either way.
-
-    `mode="full-sync"`: fetch every current symbol, unconditionally.
-    `mode="quick-sync"`: fetch only stale symbols, capped at the top
-    `QUICK_SYNC_LIMIT` by market cap -- fast on routine runs (little is
-    stale) *and* on a cold bootstrap (cap still applies when "stale" means
-    "everything").
-
-    `fetch_reports` is an orthogonal switch for the slow annual-report/10-K
-    leg -- independent of mode, not implied by it.
-
-    `symbols` bypasses mode selection entirely (a `--symbols` targeted run):
-    no universe sync, no staleness check, just fetch exactly what's named.
-    """
-    if symbols is None and mode not in market.valid_modes:
-        raise ValueError(f"{market.label}: mode {mode!r} not supported (valid modes: {market.valid_modes})")
+    """Run a full, quick, or targeted refresh for one market."""
+    if symbols is None and mode not in ALL_MODES:
+        raise ValueError(f"{market.label}: mode {mode!r} not supported (valid modes: {ALL_MODES})")
 
     if workers is None:
         workers = MAX_WORKERS
@@ -387,7 +326,9 @@ def run_pipeline(
         else:
             # quick-sync
             policies = market.staleness_policies(days_old)
-            stale = set(_stale_symbols_for(companies_dir, sorted(current_symbols), policies))
+            stale = set(stale_symbols(
+                companies_dir, policies, symbols=sorted(current_symbols)
+            ))
             ranked = _rank_by_mcap(market.indices_dir, current_symbols)
             symbols = [s for s in ranked if s in stale][:QUICK_SYNC_LIMIT]
             print(f"  {len(stale)} stale, capped to top {QUICK_SYNC_LIMIT} by market cap: {len(symbols)} to fetch")

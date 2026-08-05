@@ -1,13 +1,5 @@
-"""
-Unified data refresh CLI — one command for US and India markets.
-
-Usage:
-    python scripts/data_refresh.py                               # Both markets, quick-sync
-    python scripts/data_refresh.py --market nse --mode full-sync  # NSE500 full
-    python scripts/data_refresh.py --market snp --mode full-sync  # S&P 500 full
-    python scripts/data_refresh.py --market nse --mode quick-sync --skip-reports  # fast bootstrap
-    python scripts/data_refresh.py --market nse --symbols RELIANCE TCS
-    python scripts/data_refresh.py --workers 5                   # More parallel workers
+"""Refresh NSE500 and S&P500 data.
+Run `python scripts/data_refresh.py --help` for options.
 """
 
 import argparse
@@ -15,7 +7,7 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from screener.market import MARKETS
+from screener.market import ALL_MODES, MARKETS
 from screener.pipeline import run_pipeline
 
 
@@ -41,7 +33,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--mode",
-        choices=["quick-sync", "full-sync"],
+        choices=ALL_MODES,
         default="quick-sync",
         help="Refresh mode (default: quick-sync)",
     )
@@ -86,7 +78,7 @@ def main() -> None:
         for mc in market_configs
     ]
 
-    # Each service runs in its own parallel worker. But parallel threads for each service are locked to single parallelism calls to handle rate limits
+    # Markets run concurrently; host limiters coordinate their requests.
     start = time.time()
     results = {}
     errors = []
