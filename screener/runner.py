@@ -158,7 +158,7 @@ def run_fetch_pipeline(
         return symbol, None, last_err
 
     print(f"\nFetching {total} {label} with {workers} workers "
-          f"(≥{limiter.base_interval:.1f}s apart, {max_retries} retries)...")
+          f"(≥{limiter.base_interval:.1f}s apart, {max_retries} retries)...", flush=True)
 
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(process, s): s for s in symbols}
@@ -183,9 +183,9 @@ def run_fetch_pipeline(
                     eta = (total - n) / rate if rate else 0
                     extra = f", throttled +{limiter.interval - limiter.base_interval:.1f}s" \
                         if limiter.interval > limiter.base_interval else ""
-                    print(f"  {n}/{total} ({n * 100 // total}%)  "
+                    print(f"  [{label}] {n}/{total} ({n * 100 // total}%)  "
                           f"ok={len(report.saved)} fail={len(report.failed)}  "
-                          f"eta {eta / 60:.1f}m{extra}")
+                          f"eta {eta / 60:.1f}m{extra}", flush=True)
         except KeyboardInterrupt:
             print("\n  Interrupted — cancelling pending fetches "
                   f"({len(report.saved)} already saved).")

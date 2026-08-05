@@ -252,3 +252,52 @@ def test_write_manifest_omits_coverage_keys_for_a_market_with_neither(tmp_path):
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert "shareholding_coverage" not in manifest["test"]
     assert "edgar_coverage" not in manifest["test"]
+
+
+# ── long-running job visibility ─────────────────────────────────────
+
+def test_snp_report_job_logs_when_the_report_is_ready(tmp_path, monkeypatch, capsys):
+    report_path = tmp_path / "10-k.htm"
+    monkeypatch.setattr(
+        markets_mod,
+        "fetch_snp_reports",
+        lambda *args, **kwargs: {"downloaded": [str(report_path)], "error": None},
+    )
+    indexed = []
+    monkeypatch.setattr(markets_mod.hf, "build_index", indexed.append)
+
+    assert markets_mod._download_and_index_snp("AAA", 123) is True
+    assert indexed == [report_path]
+    output = capsys.readouterr().out
+    assert "[S&P 500 reports] AAA: downloading" in output
+    assert "[S&P 500 reports] AAA: ready" in output
+
+
+def test_final_summary_waits_for_and_reports_annual_report_result(
+    tmp_path, monkeypatch, capsys,
+):
+    monkeypatch.setattr(
+        markets_mod,
+        "fetch_ticker_data",
+        lambda symbol, **kw: {
+            "symbol": symbol,
+            "info": {},
+            "fetch_time": "2026-01-01",
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(markets_mod, "is_report_stale", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        markets_mod,
+        "process_symbol_full",
+        lambda *args, **kwargs: [{"url": "https://example.test/report.pdf"}],
+    )
+    monkeypatch.setattr(markets_mod, "_download_and_index_nse", lambda *args: True)
+    market = _test_market(tmp_path, fetch_universe=lambda: (["AAA"], None))
+
+    run_pipeline(market, mode="full-sync")
+
+    output = capsys.readouterr().out
+    assert "Annual reports stale/missing: 1" in output
+    assert "Annual reports: 1 refreshed, 0 unresolved" in output
+    assert output.index("Waiting for 1 annual-report job") < output.index("Update complete")

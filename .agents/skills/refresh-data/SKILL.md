@@ -88,8 +88,8 @@ Cheap — JSON → DB only, no re-fetch.
 - Failed NSE tickers land in `data/raw/nse/failed_tickers.txt` — retry with `--symbols`.
 - Screener.in scraping (shareholding, credit ratings) can rate-limit or break; the core
   yfinance dataset is still valid without it. Report what's missing, don't retry in a loop.
-- Progress is reported periodically; check the final summary block
-  ("Fetched/Failed" counts) for success.
+- Each market logs its work plan, fundamental-fetch ETA, company-check progress,
+  annual-report downloads, and a final summary whose runtime includes the report leg.
 - Success check: `data/manifest.json` — per-market `generated_at`, `total_companies`,
   and enrichment coverage (`shareholding_coverage`/`credit_ratings_coverage` for NSE,
   `edgar_coverage` for S&P), refreshed by every pipeline run.

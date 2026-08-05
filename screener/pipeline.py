@@ -4,7 +4,7 @@ import json
 import queue
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
@@ -95,7 +95,13 @@ def _finish(market: MarketConfig, companies_dir: Path, start: float, *, skipped:
 # Consumers enrich each saved symbol; report downloads run off the critical path.
 
 def _nse_consumer(
-    q: "queue.Queue[str | None]", companies_dir: Path, fetch_reports: bool, report_pool: ThreadPoolExecutor,
+    q: "queue.Queue[str | None]",
+    companies_dir: Path,
+    fetch_reports: bool,
+    report_pool: ThreadPoolExecutor,
+    report_futures: list[tuple[str, Future[bool]]],
+    stats: dict[str, int],
+    label: str,
 ) -> None:
     session = screener_session()
     while (sym := q.get()) is not None:
@@ -104,43 +110,90 @@ def _nse_consumer(
             need_report = fetch_reports and is_report_stale(symbol_dir, "*.pdf")
             links = process_symbol_full(sym, companies_dir, session, need_report=need_report)
             if links:
-                report_pool.submit(_download_and_index_nse, sym, links, symbol_dir)
+                report_futures.append((
+                    sym,
+                    report_pool.submit(_download_and_index_nse, sym, links, symbol_dir),
+                ))
+            elif need_report:
+                stats["report_missing"] += 1
+                print(f"  [{label} reports] {sym}: no annual-report link found", flush=True)
         except Exception as e:
-            print(f"  {sym}: enrichment error: {e}")
+            stats["errors"] += 1
+            print(f"  [{label} checks] {sym}: enrichment error: {e}", flush=True)
         finally:
+            stats["checked"] += 1
+            if stats["checked"] % 25 == 0:
+                print(
+                    f"  [{label} checks] {stats['checked']} complete, "
+                    f"{stats['errors']} errors",
+                    flush=True,
+                )
             q.task_done()
 
 
-def _download_and_index_nse(sym: str, links: list[dict], symbol_dir: Path) -> None:
+def _download_and_index_nse(sym: str, links: list[dict], symbol_dir: Path) -> bool:
+    print(f"  [NSE500 reports] {sym}: downloading...", flush=True)
     session = screener_session()
-    for path_str in download_reports(sym, links, symbol_dir, session, max_reports=1):
-        try:
+    try:
+        for path_str in download_reports(sym, links, symbol_dir, session, max_reports=1):
             pf.build_index(Path(path_str))
-        except Exception as e:
-            print(f"  {sym}: report index failed: {e}")
+            print(f"  [NSE500 reports] {sym}: ready", flush=True)
+            return True
+    except Exception as e:
+        print(f"  [NSE500 reports] {sym}: failed: {e}", flush=True)
+        return False
+    print(f"  [NSE500 reports] {sym}: no report downloaded", flush=True)
+    return False
 
 
 def _snp_consumer(
-    q: "queue.Queue[str | None]", cik_map: dict[str, int], fetch_reports: bool, report_pool: ThreadPoolExecutor,
+    q: "queue.Queue[str | None]",
+    cik_map: dict[str, int],
+    fetch_reports: bool,
+    report_pool: ThreadPoolExecutor,
+    report_futures: list[tuple[str, Future[bool]]],
+    stats: dict[str, int],
+    label: str,
 ) -> None:
     while (sym := q.get()) is not None:
         try:
             cik = cik_map.get(sym)
-            if fetch_reports and cik and is_report_stale(SNP_REPORTS_DIR / sym, "*.htm"):
-                report_pool.submit(_download_and_index_snp, sym, cik)
+            need_report = fetch_reports and is_report_stale(SNP_REPORTS_DIR / sym, "*.htm")
+            if need_report and cik:
+                future = report_pool.submit(_download_and_index_snp, sym, cik)
+                report_futures.append((sym, future))
+            elif need_report:
+                stats["report_missing"] += 1
+                print(f"  [{label} reports] {sym}: no SEC CIK found", flush=True)
         except Exception as e:
-            print(f"  {sym}: report check error: {e}")
+            stats["errors"] += 1
+            print(f"  [{label} checks] {sym}: report check error: {e}", flush=True)
         finally:
+            stats["checked"] += 1
+            if stats["checked"] % 25 == 0:
+                print(
+                    f"  [{label} checks] {stats['checked']} complete, "
+                    f"{stats['errors']} errors",
+                    flush=True,
+                )
             q.task_done()
 
 
-def _download_and_index_snp(sym: str, cik: int) -> None:
-    result = fetch_snp_reports(sym, cik, max_reports=1)
-    for path_str in result.get("downloaded", []):
-        try:
+def _download_and_index_snp(sym: str, cik: int) -> bool:
+    print(f"  [S&P 500 reports] {sym}: downloading...", flush=True)
+    try:
+        result = fetch_snp_reports(sym, cik, max_reports=1)
+        if result.get("error"):
+            raise RuntimeError(result["error"])
+        for path_str in result.get("downloaded", []):
             hf.build_index(Path(path_str))
-        except Exception as e:
-            print(f"  {sym}: report index failed: {e}")
+            print(f"  [S&P 500 reports] {sym}: ready", flush=True)
+            return True
+    except Exception as e:
+        print(f"  [S&P 500 reports] {sym}: failed: {e}", flush=True)
+        return False
+    print(f"  [S&P 500 reports] {sym}: no report downloaded", flush=True)
+    return False
 
 
 def _fetch_and_save(
@@ -166,22 +219,65 @@ def _fetch_and_save(
     # docstring: no cik_map.json cache, resolved fresh in memory each run).
     cik_map = build_cik_map() if market.uses_edgar else {}
 
-    q: queue.Queue[str | None] = queue.Queue()
-    report_pool = ThreadPoolExecutor(max_workers=1)  # one shared rate limiter -- more workers wouldn't help
-    if market.uses_edgar:
-        consumer = threading.Thread(target=_snp_consumer, args=(q, cik_map, fetch_reports, report_pool), daemon=True)
+    already = set(symbols)
+    extra: set[str] = set()
+    enrichment_stale: dict[str, int] = {}
+    if not targeted:
+        for dataset in market.enrichment_datasets:
+            stale = set(get_stale_symbols(dataset, companies_dir))
+            enrichment_stale[dataset] = len(stale)
+            extra |= stale
+
+    report_candidates: set[str] = set()
+    if fetch_reports:
+        reports_dir, glob_pat = (
+            (SNP_REPORTS_DIR, "*.htm")
+            if market.uses_edgar
+            else (NSE_REPORTS_DIR, "*.pdf")
+        )
+        report_universe = already | (set(list_symbols(companies_dir)) if not targeted else set())
+        report_candidates = {
+            sym for sym in report_universe if is_report_stale(reports_dir / sym, glob_pat)
+        }
+        if not targeted:
+            extra |= report_candidates
+
+    checks_planned = already | extra
+    print(f"\n[{market.label}] Work plan", flush=True)
+    print(f"  [{market.label}] Fundamentals to fetch: {len(symbols)}", flush=True)
+    print(f"  [{market.label}] Company checks: up to {len(checks_planned)}", flush=True)
+    for dataset, count in enrichment_stale.items():
+        print(f"  [{market.label}] {dataset} stale/missing: {count}", flush=True)
+    if fetch_reports:
+        print(
+            f"  [{market.label}] Annual reports stale/missing: {len(report_candidates)}",
+            flush=True,
+        )
     else:
-        consumer = threading.Thread(target=_nse_consumer, args=(q, companies_dir, fetch_reports, report_pool), daemon=True)
+        print(f"  [{market.label}] Annual reports: disabled", flush=True)
+
+    q: queue.Queue[str | None] = queue.Queue()
+    stats = {"checked": 0, "errors": 0, "report_missing": 0}
+    report_futures: list[tuple[str, Future[bool]]] = []
+    # One shared rate limiter means more report workers would not help.
+    report_pool = ThreadPoolExecutor(max_workers=1)
+    if market.uses_edgar:
+        args = (q, cik_map, fetch_reports, report_pool, report_futures, stats, market.label)
+        consumer = threading.Thread(target=_snp_consumer, args=args, daemon=True)
+    else:
+        args = (
+            q,
+            companies_dir,
+            fetch_reports,
+            report_pool,
+            report_futures,
+            stats,
+            market.label,
+        )
+        consumer = threading.Thread(target=_nse_consumer, args=args, daemon=True)
     consumer.start()
 
     if not targeted:
-        already = set(symbols)
-        extra: set[str] = set()
-        for dataset in market.enrichment_datasets:
-            extra |= set(get_stale_symbols(dataset, companies_dir))
-        if fetch_reports:
-            reports_dir, glob_pat = (SNP_REPORTS_DIR, "*.htm") if market.uses_edgar else (NSE_REPORTS_DIR, "*.pdf")
-            extra |= {s for s in list_symbols(companies_dir) if is_report_stale(reports_dir / s, glob_pat)}
         for sym in sorted(extra - already):
             q.put(sym)
 
@@ -213,7 +309,7 @@ def _fetch_and_save(
         ),
         handle_fn=handle,
         workers=workers,
-        label="companies",
+        label=f"{market.label} fundamentals",
     )
     results, failed = report.saved, report.failed
     write_failure_log(market.failed_tickers_path, failed)
@@ -239,18 +335,54 @@ def _fetch_and_save(
 
     # Stage B is done (consumer joined above); rebuild indices/DB now rather
     # than waiting on Stage C's report downloads, which don't feed either one.
-    print("\nRebuilding indices...")
+    print(f"\n[{market.label}] Rebuilding indices...", flush=True)
     build_indices(companies_dir=companies_dir, indices_dir=indices_dir)
-    print("Rebuilding screener.db...")
+    print(f"[{market.label}] Rebuilding screener.db...", flush=True)
     rebuild_db(market)
 
-    elapsed = time.time() - start
-    print("\n" + "=" * 60)
-    print(f"  Update complete in {elapsed:.1f}s")
-    print(f"  Fetched: {len(results)}")
-    print(f"  Failed:  {len(failed)}")
     skipped_count = len(symbols) - len(results) - len(failed)
-    print(f"  Skipped: {max(skipped_count, 0)}")
+    if report_futures:
+        print(
+            f"[{market.label}] Waiting for {len(report_futures)} annual-report job(s)...",
+            flush=True,
+        )
+    report_pool.shutdown(wait=True)
+
+    reports_ready = 0
+    reports_failed = 0
+    for sym, future in report_futures:
+        try:
+            if future.result():
+                reports_ready += 1
+            else:
+                reports_failed += 1
+        except Exception as e:
+            reports_failed += 1
+            print(f"  [{market.label} reports] {sym}: failed: {e}", flush=True)
+
+    reports_unchecked = max(
+        len(report_candidates) - len(report_futures) - stats["report_missing"],
+        0,
+    )
+    reports_unresolved = reports_failed + stats["report_missing"] + reports_unchecked
+    elapsed = time.time() - start
+    _write_manifest(market, companies_dir)
+
+    print("\n" + "=" * 60)
+    print(f"  [{market.label}] Update complete in {elapsed:.1f}s")
+    print(
+        f"  [{market.label}] Fundamentals: {len(results)} fetched, {len(failed)} failed, "
+        f"{max(skipped_count, 0)} skipped"
+    )
+    print(
+        f"  [{market.label}] Company checks: "
+        f"{stats['checked']} complete, {stats['errors']} errors"
+    )
+    if fetch_reports:
+        print(
+            f"  [{market.label}] Annual reports: "
+            f"{reports_ready} refreshed, {reports_unresolved} unresolved"
+        )
     if failed:
         print(f"  Retry:   python scripts/data_refresh.py --market {market.id} --symbols "
               f"{' '.join(s for s, _ in failed[:5])}"
@@ -261,13 +393,8 @@ def _fetch_and_save(
             summary = json.load(f)
             gen = summary.get("generated_at", "")[:16].replace("T", " ")
             total = summary.get("total_companies", 0)
-            print(f"  Index: {total} companies (as of {gen})")
+            print(f"  [{market.label}] Index: {total} companies (as of {gen})")
     print("=" * 60 + "\n")
-
-    print("Finishing annual report downloads...")
-    report_pool.shutdown(wait=True)
-
-    _write_manifest(market, companies_dir)
     return {"fetched": len(results), "failed": len(failed), "skipped": max(skipped_count, 0), "elapsed": round(elapsed, 1)}
 
 
