@@ -1,26 +1,22 @@
-"""Transform raw fetch data into company JSONs with trends."""
+"""Transform raw fetch data into company JSONs with trends.
+
+Includes former trends.py: GrowthTrend, MarginDirection, LeverageBand StrEnums
+and classify_growth, classify_margin_direction, classify_leverage, yoy, cagr, average_roe.
+"""
 
 import math
 from datetime import date
+from enum import StrEnum
+from itertools import pairwise
 from typing import Any
 
 import pandas as pd
 
 from .market import NSE, MarketConfig
-from .statements import AnnualStatements
-from .trends import (
-    average_roe,
-    cagr,
-    classify_growth,
-    classify_leverage,
-    classify_margin_direction,
-    yoy,
-)
 
 
-# ── Helpers ─────────────────────────────────────────────────────────
-
-def _safe_float(v: Any) -> float | None:
+def safe_float(v: Any) -> float | None:
+    """Convert to float; return None for invalid, NaN, or Inf."""
     if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
         return None
     try:
@@ -30,22 +26,16 @@ def _safe_float(v: Any) -> float | None:
         return None
 
 
+from .statements import AnnualStatements
+from .statements import AnnualStatements
+
 # ── Extractors ──────────────────────────────────────────────────────
 
 def build_current_snapshot(data: dict[str, Any], market: MarketConfig = NSE) -> dict:
-    """Build snapshot dict from yfinance info.
-
-    market defaults to NSE for backward compatibility with call sites (mostly
-    tests) that predate MarketConfig and never cared about market-specific
-    behavior. Every production call site (screener.markets.run_pipeline) passes
-    market explicitly. A new direct caller that forgets to pass it gets NSE's
-    INR/.NS-stripping semantics silently rather than an error -- worth keeping
-    in mind before adding another real (non-test) caller of this function.
-
-    Universe metadata (isin/nse_industry/gics_sector/...) is not part of the
-    snapshot -- see MarketConfig.metadata_fields and build_company_json,
-    which copy it onto the company JSON's top level instead.
-    """
+    """Build snapshot dict from yfinance info. `market` defaults to NSE;
+    real callers should pass it explicitly. Universe metadata
+    (isin/nse_industry/gics_sector/...) lives on the company JSON's top
+    level instead — see MarketConfig.metadata_fields."""
     info = data.get("info", {})
     symbol = data["symbol"].replace(market.ticker_suffix, "")
 
@@ -74,49 +64,49 @@ def build_current_snapshot(data: dict[str, Any], market: MarketConfig = NSE) -> 
     return {
         "as_of": metrics["fetch_time"].split("T")[0],
         "price_metrics": {
-            "trailing_pe": _safe_float(metrics.get("trailingPE")),
-            "forward_pe": _safe_float(metrics.get("forwardPE")),
-            "price_to_book": _safe_float(metrics.get("priceToBook")),
-            "peg_ratio": _safe_float(metrics.get("pegRatio")),
-            "price_to_sales": _safe_float(metrics.get("priceToSalesTrailing12Months")),
-            "enterprise_to_ebitda": _safe_float(metrics.get("enterpriseToEbitda")),
-            "enterprise_to_revenue": _safe_float(metrics.get("enterpriseToRevenue")),
+            "trailing_pe": safe_float(metrics.get("trailingPE")),
+            "forward_pe": safe_float(metrics.get("forwardPE")),
+            "price_to_book": safe_float(metrics.get("priceToBook")),
+            "peg_ratio": safe_float(metrics.get("pegRatio")),
+            "price_to_sales": safe_float(metrics.get("priceToSalesTrailing12Months")),
+            "enterprise_to_ebitda": safe_float(metrics.get("enterpriseToEbitda")),
+            "enterprise_to_revenue": safe_float(metrics.get("enterpriseToRevenue")),
         },
         "profitability": {
-            "profit_margin": _safe_float(metrics.get("profitMargins")),
-            "gross_margin": _safe_float(metrics.get("grossMargins")),
-            "operating_margin": _safe_float(metrics.get("operatingMargins")),
-            "ebitda_margin": _safe_float(metrics.get("ebitdaMargins")),
-            "return_on_equity": _safe_float(metrics.get("returnOnEquity")),
-            "return_on_assets": _safe_float(metrics.get("returnOnAssets")),
+            "profit_margin": safe_float(metrics.get("profitMargins")),
+            "gross_margin": safe_float(metrics.get("grossMargins")),
+            "operating_margin": safe_float(metrics.get("operatingMargins")),
+            "ebitda_margin": safe_float(metrics.get("ebitdaMargins")),
+            "return_on_equity": safe_float(metrics.get("returnOnEquity")),
+            "return_on_assets": safe_float(metrics.get("returnOnAssets")),
         },
         "financial_health": {
-            "debt_to_equity": _safe_float(metrics.get("debtToEquity")),
-            "current_ratio": _safe_float(metrics.get("currentRatio")),
-            "quick_ratio": _safe_float(metrics.get("quickRatio")),
-            "beta": _safe_float(metrics.get("beta")),
+            "debt_to_equity": safe_float(metrics.get("debtToEquity")),
+            "current_ratio": safe_float(metrics.get("currentRatio")),
+            "quick_ratio": safe_float(metrics.get("quickRatio")),
+            "beta": safe_float(metrics.get("beta")),
         },
         "size": {
-            "market_cap": _safe_float(metrics.get("marketCap")),
-            "enterprise_value": _safe_float(metrics.get("enterpriseValue")),
-            "total_revenue": _safe_float(metrics.get("totalRevenue")),
-            "employees": _safe_float(metrics.get("fullTimeEmployees")),
+            "market_cap": safe_float(metrics.get("marketCap")),
+            "enterprise_value": safe_float(metrics.get("enterpriseValue")),
+            "total_revenue": safe_float(metrics.get("totalRevenue")),
+            "employees": safe_float(metrics.get("fullTimeEmployees")),
         },
         "dividends": {
-            "dividend_rate": _safe_float(metrics.get("dividendRate")),
-            "dividend_yield": _safe_float(metrics.get("dividendYield")),
-            "payout_ratio": _safe_float(metrics.get("payoutRatio")),
+            "dividend_rate": safe_float(metrics.get("dividendRate")),
+            "dividend_yield": safe_float(metrics.get("dividendYield")),
+            "payout_ratio": safe_float(metrics.get("payoutRatio")),
         },
         "growth": {
-            "revenue_growth": _safe_float(metrics.get("revenueGrowth")),
-            "earnings_growth": _safe_float(metrics.get("earningsGrowth")),
-            "earnings_quarterly_growth": _safe_float(metrics.get("earningsQuarterlyGrowth")),
+            "revenue_growth": safe_float(metrics.get("revenueGrowth")),
+            "earnings_growth": safe_float(metrics.get("earningsGrowth")),
+            "earnings_quarterly_growth": safe_float(metrics.get("earningsQuarterlyGrowth")),
         },
         "per_share": {
-            "trailing_eps": _safe_float(metrics.get("trailingEps")),
-            "forward_eps": _safe_float(metrics.get("forwardEps")),
-            "book_value": _safe_float(metrics.get("bookValue")),
-            "revenue_per_share": _safe_float(metrics.get("revenuePerShare")),
+            "trailing_eps": safe_float(metrics.get("trailingEps")),
+            "forward_eps": safe_float(metrics.get("forwardEps")),
+            "book_value": safe_float(metrics.get("bookValue")),
+            "revenue_per_share": safe_float(metrics.get("revenuePerShare")),
         },
     }
 
@@ -126,7 +116,7 @@ def build_current_snapshot(data: dict[str, Any], market: MarketConfig = NSE) -> 
 def _compute_operating_margin(rev, op):
     m = []
     for r, o in zip(rev, op):
-        if _safe_float(r) and _safe_float(o) and r != 0:
+        if safe_float(r) and safe_float(o) and r != 0:
             m.append(o / r)
         else:
             m.append(None)
@@ -134,17 +124,9 @@ def _compute_operating_margin(rev, op):
 
 
 def build_trends(statements: AnnualStatements, series_spec: tuple, *, source: str) -> dict[str, Any]:
-    """Build historical_trends dict from statements + series spec.
-
-    series_spec: tuple of (output_key, AnnualLineItems attribute name) pairs.
-    MarketConfig.trend_series provides the market-specific spec. Both markets
-    share the same output key ("values") — the currency is on the top-level
-    company JSON, not duplicated per series.
-
-    Derives composite metrics (operating_margin, roe, debt_to_equity) from
-    the base series when the constituent line items are present, so SNP (which
-    lacks balance-sheet data in EDGAR) simply omits those composites.
-    """
+    """Build historical_trends dict from statements + series spec
+    (MarketConfig.trend_series). Also derives composite metrics
+    (operating_margin, roe, debt_to_equity) when their inputs are present."""
     years = statements.years
     if not years:
         return {"source": source, "years_available": [], "error": "no_data"}
@@ -155,7 +137,7 @@ def build_trends(statements: AnnualStatements, series_spec: tuple, *, source: st
 
     for out_key, attr_name in series_spec:
         vals = getattr(statements, attr_name)
-        clean = [v for v in vals if _safe_float(v)]
+        clean = [v for v in vals if safe_float(v)]
 
         entry: dict[str, Any] = {"values": vals}
 
@@ -168,7 +150,7 @@ def build_trends(statements: AnnualStatements, series_spec: tuple, *, source: st
 
         if out_key in ("gross_profit", "free_cash_flow", "operating_cash_flow"):
             entry["trend"] = classify_growth(vals)
-            entry["positive_years"] = sum(1 for v in vals if _safe_float(v) and v > 0)
+            entry["positive_years"] = sum(1 for v in vals if safe_float(v) and v > 0)
 
         out[out_key] = entry
 
@@ -187,7 +169,7 @@ def build_trends(statements: AnnualStatements, series_spec: tuple, *, source: st
         ni_vals = getattr(statements, attr_map["net_income"])
         eq_vals = getattr(statements, attr_map["stockholders_equity"])
         roe_values = [
-            _safe_float(ni_v / eq) if _safe_float(ni_v) is not None and eq else None
+            safe_float(ni_v / eq) if safe_float(ni_v) is not None and eq else None
             for ni_v, eq in zip(ni_vals, eq_vals)
         ]
         out["roe"] = {
@@ -200,7 +182,7 @@ def build_trends(statements: AnnualStatements, series_spec: tuple, *, source: st
         debt_vals = getattr(statements, attr_map["total_debt"])
         eq_vals = getattr(statements, attr_map["stockholders_equity"])
         de_values = [
-            _safe_float(d / e) if _safe_float(d) is not None and e else None
+            safe_float(d / e) if safe_float(d) is not None and e else None
             for d, e in zip(debt_vals, eq_vals)
         ]
         out["debt_to_equity"] = {
@@ -236,29 +218,20 @@ def build_historical_trends_edgar(facts: dict | None, market: MarketConfig | Non
 
 
 def build_institutional_ownership(data: dict[str, Any]) -> dict | None:
-    """S&P-only: pct_insider/pct_institutional come from yfinance's info blob
-    (already fetched for current_snapshot, no extra network call);
-    top_holders comes from ticker.institutional_holders, a distinct yfinance
-    call gated by MarketConfig.fetch_institutional_holders (see fetch.
-    fetch_ticker_data). Percentages are stored as whole numbers (52.3 =
-    52.3%), matching NSE's shareholding convention -- yfinance itself
-    reports these as 0-1 fractions.
-
-    Returns None when nothing was fetched (NSE, or a failed/empty SNP fetch),
-    same convention as shareholding/credit_ratings.
-    """
+    """S&P-only. Percentages stored as whole numbers (52.3 = 52.3%), matching
+    NSE's shareholding convention. Returns None if nothing was fetched."""
     info = data.get("info", {})
-    pct_insider = _safe_float(info.get("heldPercentInsiders"))
-    pct_institutional = _safe_float(info.get("heldPercentInstitutions"))
+    pct_insider = safe_float(info.get("heldPercentInsiders"))
+    pct_institutional = safe_float(info.get("heldPercentInstitutions"))
 
     holders_df = data.get("institutional_holders")
     top_holders = []
     if holders_df is not None and not holders_df.empty:
         for _, row in holders_df.iterrows():
-            pct_out = _safe_float(row.get("pctHeld"))
+            pct_out = safe_float(row.get("pctHeld"))
             top_holders.append({
                 "holder": row.get("Holder"),
-                "shares": _safe_float(row.get("Shares")),
+                "shares": safe_float(row.get("Shares")),
                 "pct_out": pct_out * 100 if pct_out is not None else None,
             })
 
@@ -319,9 +292,6 @@ def build_company_json(
     data: dict[str, Any],
     metadata: dict[str, dict] | None = None,
     historical_trends: dict[str, Any] | None = None,
-    industry_comparison: dict[str, Any] | None = None,
-    shareholding: dict | None = None,
-    credit_ratings: dict | None = None,
     market: MarketConfig = NSE,
     cik: int | None = None,
     institutional_ownership: dict | None = None,
@@ -331,10 +301,6 @@ def build_company_json(
     snapshot = build_current_snapshot(data, market)
     bare_symbol = symbol.replace(market.ticker_suffix, "")
 
-    # market.metadata_fields maps output-key -> metadata-key (see MarketConfig):
-    # NSE gets isin/nse_industry from its official CSV, SNP gets gics_sector/
-    # gics_industry from Wikipedia's table -- both fetched by fetch_universe
-    # and passed in here as `metadata`, keyed by the suffixed symbol.
     m = (metadata or {}).get(f"{bare_symbol}{market.ticker_suffix}", {})
     extra_fields = {out_key: m.get(meta_key) for out_key, meta_key in market.metadata_fields.items()}
 
@@ -349,8 +315,105 @@ def build_company_json(
         "current_snapshot": snapshot,
         "historical_trends": historical_trends or {},
         "key_insights": generate_insights(historical_trends or {}),
-        "industry_comparison": industry_comparison,
-        "shareholding": shareholding,
-        "credit_ratings": credit_ratings,
         "institutional_ownership": institutional_ownership,
     }
+
+
+# ── Trend classifiers (former trends.py) ────────────────────────────
+
+
+class GrowthTrend(StrEnum):
+    CONSISTENTLY_GROWING = "consistently_growing"
+    MOSTLY_GROWING = "mostly_growing"
+    DECLINING = "declining"
+    VOLATILE = "volatile"
+    INSUFFICIENT_DATA = "insufficient_data"
+
+
+def classify_growth(values: list[float | None]) -> GrowthTrend:
+    clean = [v for v in values if v is not None]
+    if len(clean) < 3:
+        return GrowthTrend.INSUFFICIENT_DATA
+    ups = sum(1 for a, b in pairwise(clean) if b > a)
+    if ups >= len(clean) - 1:
+        return GrowthTrend.CONSISTENTLY_GROWING
+    if ups == 0:
+        return GrowthTrend.DECLINING
+    if ups >= (len(clean) - 1) * 0.6:
+        return GrowthTrend.MOSTLY_GROWING
+    return GrowthTrend.VOLATILE
+
+
+class MarginDirection(StrEnum):
+    EXPANDING = "expanding"
+    CONTRACTING = "contracting"
+    STABLE = "stable"
+    INSUFFICIENT_DATA = "insufficient_data"
+
+
+def classify_margin_direction(values: list[float | None]) -> MarginDirection:
+    clean = [v for v in values if v is not None]
+    if len(clean) < 2:
+        return MarginDirection.INSUFFICIENT_DATA
+    change = clean[-1] - clean[0]
+    if change > 0.02:
+        return MarginDirection.EXPANDING
+    if change < -0.02:
+        return MarginDirection.CONTRACTING
+    return MarginDirection.STABLE
+
+
+class LeverageBand(StrEnum):
+    DEBT_FREE = "debt_free"
+    LOW = "low"
+    MODERATE = "moderate"
+    HIGH = "high"
+    INSUFFICIENT_DATA = "insufficient_data"
+
+
+def yoy(values: list[float | None]) -> list[float | None]:
+    if len(values) < 2:
+        return [None] * len(values)
+    out: list[float | None] = [None]
+    for i in range(1, len(values)):
+        a, b = values[i - 1], values[i]
+        out.append((b - a) / abs(a) if a and b and a != 0 else None)
+    return out
+
+
+def cagr(values: list[float | None]) -> float | None:
+    valid = [(i, v) for i, v in enumerate(values) if v is not None and v > 0]
+    if len(valid) < 2:
+        return None
+    n = valid[-1][0] - valid[0][0]
+    if n <= 0:
+        return None
+    return (valid[-1][1] / valid[0][1]) ** (1 / n) - 1
+
+
+def average_roe(values: list[float | None], window: int = 3) -> float | None:
+    """Mean ROE over the trailing `window` fiscal years. Previously computed
+    as net-income CAGR standing in for an ROE average — a different metric
+    entirely, just because both happened to be "a number about profitability
+    over 3 years"."""
+    trailing = [v for v in values[-window:] if v is not None]
+    if not trailing:
+        return None
+    return sum(trailing) / len(trailing)
+
+
+def classify_leverage(values: list[float | None]) -> LeverageBand:
+    """Band the *level* of the most recent debt/equity ratio — not a delta
+    over time like classify_margin_direction. `values` must be the ratio
+    (debt/equity), not raw debt."""
+    clean = [v for v in values if v is not None]
+    if not clean:
+        return LeverageBand.INSUFFICIENT_DATA
+    latest = clean[-1]
+    if latest < 0.05:
+        return LeverageBand.DEBT_FREE
+    if latest < 0.5:
+        return LeverageBand.LOW
+    if latest < 1.5:
+        return LeverageBand.MODERATE
+    return LeverageBand.HIGH

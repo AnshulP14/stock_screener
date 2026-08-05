@@ -2,13 +2,12 @@
 Unified data refresh CLI — one command for US and India markets.
 
 Usage:
-    python scripts/cli.py                          # Both markets, incremental
-    python scripts/cli.py --market nse --mode full # NSE500 full
-    python scripts/cli.py --market snp --mode full # S&P 500 full
-    python scripts/cli.py --market nse --mode quick # Top 50 NSE500
-    python scripts/cli.py --market nse --symbols RELIANCE TCS
-    python scripts/cli.py --dry-run                # Preview only
-    python scripts/cli.py --workers 5              # More parallel workers
+    python scripts/data_refresh.py                               # Both markets, quick-sync
+    python scripts/data_refresh.py --market nse --mode full-sync  # NSE500 full
+    python scripts/data_refresh.py --market snp --mode full-sync  # S&P 500 full
+    python scripts/data_refresh.py --market nse --mode quick-sync --skip-reports  # fast bootstrap
+    python scripts/data_refresh.py --market nse --symbols RELIANCE TCS
+    python scripts/data_refresh.py --workers 5                   # More parallel workers
 """
 
 import argparse
@@ -16,8 +15,8 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from screener.market import MARKETS, coerce_mode
-from screener.markets import run_pipeline
+from screener.market import MARKETS
+from screener.pipeline import run_pipeline
 
 
 def _run_market(label: str, market, kwargs: dict):
@@ -42,9 +41,9 @@ def main() -> None:
     )
     parser.add_argument(
         "--mode",
-        choices=["incremental", "full", "quick", "sync-universe", "transform-only", "rebuild"],
-        default="incremental",
-        help="Refresh mode (default: incremental)",
+        choices=["quick-sync", "full-sync"],
+        default="quick-sync",
+        help="Refresh mode (default: quick-sync)",
     )
     parser.add_argument(
         "--symbols",
@@ -67,48 +66,27 @@ def main() -> None:
         help="Parallel fetch workers (default: per-market config)",
     )
     parser.add_argument(
-        "--no-transform",
+        "--skip-reports",
         action="store_true",
-        help="Skip index rebuild after fetching (NSE500 only)",
+        help="Skip the annual report / 10-K download+index step (the slow leg) -- "
+             "independent of --mode, e.g. a fast `--mode full --skip-reports` run",
     )
-    parser.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="Show what would be fetched without fetching",
-    )
-
     args = parser.parse_args()
 
-    market_configs = []
-    for key in ("nse", "snp") if args.market == "all" else [args.market]:
-        mc = MARKETS[key]
-        mode = coerce_mode(args.mode, mc)
-        if mode != args.mode:
-            print(f"  {mc.label}: '{args.mode}' not applicable, using '{mode}'")
-        market_configs.append(mc)
+    market_configs = [MARKETS[key] for key in (("nse", "snp") if args.market == "all" else [args.market])]
 
-    if not market_configs:
-        print("Nothing to do.", file=sys.stderr)
-        sys.exit(1)
-
-    jobs = []
-    for mc in market_configs:
-        mode = coerce_mode(args.mode, mc)
-        kwargs = {
-            "mode": mode,
+    jobs = [
+        (mc.label, mc, {
+            "mode": args.mode,
             "symbols": args.symbols,
             "workers": args.workers,
-            "dry_run": args.dry_run,
             "days_old": args.days_old,
-        }
-        if mc.id == "nse":
-            kwargs["no_transform"] = args.no_transform
-        jobs.append((mc.label, mc, kwargs))
+            "fetch_reports": not args.skip_reports,
+        })
+        for mc in market_configs
+    ]
 
-    # Markets run concurrently as separate threads, but yfinance itself stays
-    # a single sequential stream (screener.fetch._YFINANCE_LOCK) regardless --
-    # this only buys overlap between NSE's Screener.in enrichment and SNP's
-    # yfinance fetch, two genuinely different hosts.
+    # Each service runs in its own parallel worker. But parallel threads for each service are locked to single parallelism calls to handle rate limits
     start = time.time()
     results = {}
     errors = []

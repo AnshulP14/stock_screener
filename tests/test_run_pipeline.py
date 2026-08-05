@@ -17,10 +17,9 @@ import pandas as pd
 import pytest
 
 from screener import index as index_mod
-from screener import markets as markets_mod
+from screener import pipeline as markets_mod
 from screener.market import MarketConfig
-from screener.markets import run_pipeline
-from screener.store import CompanyStore
+from screener.pipeline import run_pipeline
 
 
 @pytest.fixture(autouse=True)
@@ -32,7 +31,7 @@ def _isolate_manifest(tmp_path, monkeypatch):
     monkeypatch.setattr(index_mod, "MANIFEST_PATH", tmp_path / "manifest.json")
 
 
-def _test_market(tmp_path, *, fetch_universe, valid_modes=("sync-universe",), **kwargs) -> MarketConfig:
+def _test_market(tmp_path, *, fetch_universe, valid_modes=("quick-sync",), **kwargs) -> MarketConfig:
     return MarketConfig(
         id="test",
         label="TEST",
@@ -49,27 +48,31 @@ def _test_market(tmp_path, *, fetch_universe, valid_modes=("sync-universe",), **
     )
 
 
-def test_sync_universe_reaches_dry_run_when_symbols_are_stale(tmp_path):
+def test_sync_universe_reaches_fetch_path_when_symbols_are_stale(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        markets_mod, "fetch_ticker_data",
+        lambda symbol, **kw: {"symbol": symbol, "info": {}, "fetch_time": "2026-01-01", "error": None},
+    )
     market = _test_market(tmp_path, fetch_universe=lambda: (["AAA", "BBB"], None))
-    result = run_pipeline(market, mode="sync-universe", dry_run=True)
+    result = run_pipeline(market, mode="quick-sync")
     # Before the fix this returned None (fell through the if/elif/else).
     assert result is not None
-    assert result["fetched"] == 0 and result["failed"] == 0
+    assert result["fetched"] == 2 and result["failed"] == 0
 
 
 def test_sync_universe_with_no_stale_symbols_still_returns_a_result(tmp_path):
     market = _test_market(tmp_path, fetch_universe=lambda: ([], None))
-    result = run_pipeline(market, mode="sync-universe")
+    result = run_pipeline(market, mode="quick-sync")
     assert result == {"fetched": 0, "failed": 0, "skipped": 0, "elapsed": result["elapsed"]}
 
 
 def test_invalid_mode_for_market_raises(tmp_path):
-    market = _test_market(tmp_path, fetch_universe=lambda: ([], None), valid_modes=("full",))
+    market = _test_market(tmp_path, fetch_universe=lambda: ([], None), valid_modes=("full-sync",))
     with pytest.raises(ValueError, match="not supported"):
-        run_pipeline(market, mode="quick")
+        run_pipeline(market, mode="quick-sync")
 
 
-def test_incremental_always_rechecks_live_universe_even_with_existing_local_data(tmp_path):
+def test_incremental_always_rechecks_live_universe_even_with_existing_local_data(tmp_path, monkeypatch):
     # User explicitly asked for both markets to auto-discover brand-new
     # listings on every incremental run (not just sync-universe), matching
     # the pre-unification snp.py behavior. Two symbols already have local
@@ -87,8 +90,12 @@ def test_incremental_always_rechecks_live_universe_even_with_existing_local_data
         calls.append(1)
         return ["AAA", "BBB", "CCC"], None
 
-    market = _test_market(tmp_path, fetch_universe=fetch_universe, valid_modes=("incremental",))
-    result = run_pipeline(market, mode="incremental", dry_run=True)
+    monkeypatch.setattr(
+        markets_mod, "fetch_ticker_data",
+        lambda symbol, **kw: {"symbol": symbol, "info": {}, "fetch_time": "2026-01-01", "error": None},
+    )
+    market = _test_market(tmp_path, fetch_universe=fetch_universe, valid_modes=("quick-sync",))
+    result = run_pipeline(market, mode="quick-sync")
 
     assert calls, "fetch_universe was never called -- incremental fell back to globbing local files"
     assert result is not None
@@ -107,7 +114,7 @@ def test_skipped_count_reflects_full_universe_not_hardcoded_zero(tmp_path):
     (companies_dir / "BBB.json").write_text("{}")
     market = _test_market(tmp_path, fetch_universe=lambda: (["AAA", "BBB"], None))
 
-    result = run_pipeline(market, mode="sync-universe")
+    result = run_pipeline(market, mode="quick-sync")
 
     assert result["skipped"] == 2
 
@@ -138,9 +145,9 @@ def test_full_mode_with_uses_edgar_routes_through_edgar_trends_and_cik(tmp_path,
     monkeypatch.setattr(markets_mod, "fetch_ticker_data", fake_fetch_ticker_data)
 
     market = _test_market(
-        tmp_path, fetch_universe=lambda: (["AAA"], None), valid_modes=("full",), uses_edgar=True,
+        tmp_path, fetch_universe=lambda: (["AAA"], None), valid_modes=("full-sync",), uses_edgar=True,
     )
-    run_pipeline(market, mode="full")
+    run_pipeline(market, mode="full-sync")
 
     assert cik_map_calls == [1]  # built once for the whole run, not per symbol
     assert edgar_calls == [("AAA", 111)]
@@ -158,8 +165,8 @@ def test_full_mode_without_uses_edgar_does_not_build_cik_map(tmp_path, monkeypat
         lambda symbol, **kw: {"symbol": symbol, "info": {}, "fetch_time": "2026-01-01", "error": None},
     )
 
-    market = _test_market(tmp_path, fetch_universe=lambda: (["AAA"], None), valid_modes=("full",))
-    run_pipeline(market, mode="full")
+    market = _test_market(tmp_path, fetch_universe=lambda: (["AAA"], None), valid_modes=("full-sync",))
+    run_pipeline(market, mode="full-sync")
 
     assert cik_map_calls == []
     company = json.loads((tmp_path / "companies" / "AAA.json").read_text())
@@ -186,10 +193,10 @@ def test_fetch_institutional_holders_flag_populates_institutional_ownership(tmp_
     monkeypatch.setattr(markets_mod, "fetch_ticker_data", fake_fetch_ticker_data)
 
     market = _test_market(
-        tmp_path, fetch_universe=lambda: (["AAA"], None), valid_modes=("full",),
+        tmp_path, fetch_universe=lambda: (["AAA"], None), valid_modes=("full-sync",),
         fetch_institutional_holders=True,
     )
-    run_pipeline(market, mode="full")
+    run_pipeline(market, mode="full-sync")
 
     company = json.loads((tmp_path / "companies" / "AAA.json").read_text())
     io = company["institutional_ownership"]
@@ -213,7 +220,7 @@ def test_write_manifest_computes_enrichment_dataset_coverage(tmp_path):
     market = _test_market(
         tmp_path, fetch_universe=lambda: ([], None), enrichment_datasets=("shareholding",),
     )
-    markets_mod._write_manifest(market, CompanyStore(companies_dir))
+    markets_mod._write_manifest(market, companies_dir)
 
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert manifest["test"]["shareholding_coverage"] == 0.5
@@ -230,7 +237,7 @@ def test_write_manifest_edgar_coverage_needs_real_years_not_just_a_resolved_cik(
     ))
 
     market = _test_market(tmp_path, fetch_universe=lambda: ([], None), uses_edgar=True)
-    markets_mod._write_manifest(market, CompanyStore(companies_dir))
+    markets_mod._write_manifest(market, companies_dir)
 
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert manifest["test"]["edgar_coverage"] == 0.5
@@ -242,7 +249,7 @@ def test_write_manifest_omits_coverage_keys_for_a_market_with_neither(tmp_path):
     (companies_dir / "AAA.json").write_text(json.dumps({}))
 
     market = _test_market(tmp_path, fetch_universe=lambda: ([], None))
-    markets_mod._write_manifest(market, CompanyStore(companies_dir))
+    markets_mod._write_manifest(market, companies_dir)
 
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert "shareholding_coverage" not in manifest["test"]

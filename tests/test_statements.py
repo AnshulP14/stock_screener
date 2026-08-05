@@ -11,7 +11,6 @@ history near an IPO).
 """
 
 import pandas as pd
-import pytest
 
 from screener.market import NSE, SNP
 from screener.statements import AnnualLineItems, AnnualStatements

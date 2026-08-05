@@ -7,7 +7,7 @@ DATA_DIR = ROOT / "data"
 RAW_DIR = ROOT / "data" / "raw"
 
 # Curated data paths
-COMPANIES_DIR = DATA_DIR / "nse" / "companies"
+NSE_COMPANIES_DIR = DATA_DIR / "nse" / "companies"
 INDICES_DIR = DATA_DIR / "nse" / "indices"
 SNP_COMPANIES_DIR = DATA_DIR / "snp" / "companies"
 SNP_INDICES_DIR = DATA_DIR / "snp" / "indices"

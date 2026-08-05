@@ -2,17 +2,19 @@
 
 import json
 import re
-import time
 from datetime import date
+from pathlib import Path
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Tag
 
-from .config import SCREENER_USER_AGENT, RATE_LIMIT_DELAY, CREDIT_RATINGS_STALE_DAYS
-from .freshness import AgeDays, Market, QuarterLag, is_stale
-from .store import CompanyStore
+from .annual_reports import parse_annual_report_links
+from .config import CREDIT_RATINGS_STALE_DAYS, SCREENER_USER_AGENT
+from .freshness import NSE, AgeDays, QuarterLag, is_stale
+from .runner import SCREENER_LIMITER
+from .index import iter_companies, load_company, merge_company
 
-_QUARTER_POLICY = QuarterLag(field=("shareholding", "quarters", -1), market=Market.NSE)
+_QUARTER_POLICY = QuarterLag(field=("shareholding", "quarters", -1), market=NSE)
 _RATINGS_POLICY = AgeDays(field=("credit_ratings", "updated_at"), days=CREDIT_RATINGS_STALE_DAYS)
 
 
@@ -31,9 +33,14 @@ def _fetch_soup(
     statuses: list[int | None] = []
     for view in ("consolidated", ""):
         url = f"https://www.screener.in/company/{symbol}/{view}/"
+        SCREENER_LIMITER.acquire()
         try:
             resp = getter.get(url, timeout=20)
             statuses.append(resp.status_code)
+            if resp.status_code == 429:
+                SCREENER_LIMITER.penalize()
+            else:
+                SCREENER_LIMITER.reward()
             if resp.status_code == 200:
                 return BeautifulSoup(resp.text, "html.parser"), statuses
         except requests.RequestException:
@@ -41,9 +48,9 @@ def _fetch_soup(
     return None, statuses
 
 
-def _load_company(symbol: str, store: CompanyStore) -> dict:
+def _load_company(symbol: str, dir_path: Path) -> dict:
     try:
-        return store.load(symbol)
+        return load_company(dir_path, symbol)
     except (FileNotFoundError, json.JSONDecodeError):
         return {"symbol": symbol}
 
@@ -114,13 +121,15 @@ _CRISIL_ACTION = {
 }
 
 def parse_credit_ratings(soup: BeautifulSoup) -> dict:
-    cr_div = soup.find("div", class_=lambda c: c and "credit-ratings" in (c or ""))
-    links = cr_div.find_all("a") if cr_div else []
+    cr_div = soup.find("div", class_=lambda c: bool(c and "credit-ratings" in c))
+    links = cr_div.find_all("a") if isinstance(cr_div, Tag) else []
 
     entries = []
     for a in links:
+        if not isinstance(a, Tag):
+            continue
         date_div = a.find("div", class_="smaller")
-        href = a.get("href", "")
+        href = str(a.get("href", ""))
         entries.append({
             "date": _parse_date_text(date_div.get_text(strip=True) if date_div else ""),
             "agency": _detect_agency(href),
@@ -143,7 +152,7 @@ def parse_credit_ratings(soup: BeautifulSoup) -> dict:
         "latest_date": latest["date"],
         "latest_agency": latest["agency"],
         "latest_action": latest["action"],
-        "agencies": sorted(set(e["agency"] for e in entries)),
+        "agencies": sorted({e["agency"] for e in entries}),
         "recent_entries": entries,
     }
 
@@ -188,7 +197,7 @@ DATASETS = {
 }
 
 
-def get_stale_symbols(dataset: str, store: CompanyStore, symbols: list[str] | None = None) -> list[str]:
+def get_stale_symbols(dataset: str, dir_path: Path, symbols: list[str] | None = None) -> list[str]:
     """Stale symbols for `dataset`.
 
     `symbols`, when given, restricts the check to that explicit set (a
@@ -198,7 +207,7 @@ def get_stale_symbols(dataset: str, store: CompanyStore, symbols: list[str] | No
     """
     _, _, is_stale_fn = DATASETS[dataset]
     stale = []
-    for path, company in store.iter_all():
+    for path, company in iter_companies(dir_path):
         if symbols is not None and path.stem not in symbols:
             continue
         if is_stale_fn(company):
@@ -206,19 +215,18 @@ def get_stale_symbols(dataset: str, store: CompanyStore, symbols: list[str] | No
     return stale
 
 
-def process_symbols(symbols: list[str], dataset: str, store: CompanyStore, *, force: bool = False, log_fn=print) -> tuple[int, int, int]:
+def process_symbols(symbols: list[str], dataset: str, dir_path: Path, *, force: bool = False, log_fn=print) -> tuple[int, int, int]:
     key, parse_fn, is_stale_fn = DATASETS[dataset]
     session = _get_session()
     ok = skipped = failed = rate_limited = 0
 
     for sym in symbols:
-        company = _load_company(sym, store)
+        company = _load_company(sym, dir_path)
         if not force and not is_stale_fn(company):
             skipped += 1
             continue
 
         soup, statuses = _fetch_soup(sym, session)
-        time.sleep(RATE_LIMIT_DELAY)
         result = parse_fn(soup) if soup else None
         if result is None:
             failed += 1
@@ -228,8 +236,7 @@ def process_symbols(symbols: list[str], dataset: str, store: CompanyStore, *, fo
             else:
                 log_fn(f"  {sym}: fetch failed (status={statuses})")
         else:
-            company[key] = result
-            store.save(sym, company)
+            merge_company(dir_path, sym, {key: result})
             ok += 1
 
         if len(symbols) > 25 and len(symbols) % 25 == 0:
@@ -237,3 +244,35 @@ def process_symbols(symbols: list[str], dataset: str, store: CompanyStore, *, fo
             log_fn(f"  [{ok + skipped + failed}/{len(symbols)}] {ok} ok  {skipped} skipped  {failed} failed{suffix}")
 
     return ok, skipped, failed
+
+
+def process_symbol_full(
+    sym: str, dir_path: Path, session: requests.Session, *, need_report: bool = False,
+) -> list[dict]:
+    """One screener.in page fetch for `sym` -> shareholding + credit ratings
+    (merged in if stale) + annual report links (parsed if `need_report`).
+
+    Used by the combined NSE enrichment pass in run_pipeline, which folds
+    what used to be two separate scrapes (shareholding/ratings, then a
+    second pass for annual-report links) into a single request per symbol.
+    Returns the discovered report links (possibly empty) for the caller to
+    download -- this function never touches the filesystem for reports.
+    """
+    company = _load_company(sym, dir_path)
+    need_shareholding = _is_shareholding_stale(company)
+    need_ratings = _is_ratings_stale(company)
+    if not (need_shareholding or need_ratings or need_report):
+        return []
+
+    soup, _statuses = _fetch_soup(sym, session)
+    if soup is None:
+        return []
+
+    if need_shareholding:
+        result = parse_shareholding(soup)
+        if result is not None:
+            merge_company(dir_path, sym, {"shareholding": result})
+    if need_ratings:
+        merge_company(dir_path, sym, {"credit_ratings": parse_credit_ratings(soup)})
+
+    return parse_annual_report_links(soup) if need_report else []

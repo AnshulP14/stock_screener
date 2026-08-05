@@ -7,13 +7,11 @@ fixtures for pure logic and 3-4 corpus smoke tests against real filings.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import pytest
 
-from screener import html_filings as hf
-
+from screener.filings import html_filings as hf
 
 # ----------------------------------------------------------------------- fixtures
 
@@ -92,14 +90,6 @@ def test_page_splitting_with_hr_marker(tmp_path: Path):
         [{"text": "Before HR", "size": _BODY_SIZE}],
         [{"text": "After HR", "size": _BODY_SIZE}],
     ]
-    # Manual HR break
-    doc = ['<?xml version="1.0" encoding="UTF-8"?>',
-           '<!DOCTYPE html><html><body>',
-           '<p style="font-size: 10pt">Before HR</p>',
-           '<hr style="display:none; page-break-after:always; visibility:hidden">',
-           '<p style="font-size: 10pt">After HR</p>',
-           '</body></html>']
-    # Use CSS break instead (more reliable)
     htm = _fixture_hth(tmp_path, data)
     pages = hf.doc_pages(htm)
     assert len(pages) == 2
@@ -157,7 +147,7 @@ def test_heading_candidate_filtering(tmp_path: Path):
         ],
     ]
     htm = _fixture_hth(tmp_path, data)
-    text, offsets, sections, meta = hf.parse_filing(htm)
+    _text, _offsets, sections, _meta = hf.parse_filing(htm)
     titles = [s["title"] for s in sections]
     assert "Item 1. Business" in titles
     assert "Item 1A. Risk Factors" in titles
@@ -171,7 +161,7 @@ def test_long_line_not_a_heading(tmp_path: Path):
          {"text": "Short heading", "size": _BODY_SIZE}],
     ]
     htm = _fixture_hth(tmp_path, data)
-    text, offsets, sections, meta = hf.parse_filing(htm)
+    _text, _offsets, sections, _meta = hf.parse_filing(htm)
     titles = [s["title"] for s in sections]
     assert not any(long_line[:20] in t for t in titles)
     # The short body line might become heading if nothing else
@@ -185,7 +175,7 @@ def test_heading_needs_more_than_three_letters(tmp_path: Path):
          {"text": "Body text", "size": _BODY_SIZE}],
     ]
     htm = _fixture_hth(tmp_path, data)
-    text, offsets, sections, meta = hf.parse_filing(htm)
+    _text, _offsets, sections, _meta = hf.parse_filing(htm)
     titles = [s["title"] for s in sections]
     assert not any("12" in t for t in titles)
 
@@ -201,7 +191,7 @@ def test_consecutive_repeats_merge_into_one_range(tmp_path: Path):
         for _ in range(4)
     ]
     htm = _fixture_hth(tmp_path, data)
-    text, offsets, sections, meta = hf.parse_filing(htm)
+    _text, _offsets, sections, _meta = hf.parse_filing(htm)
     board = next(s for s in sections if "Board Report" in s["title"])
     assert board["pages"] == 4
     assert board["end_page"] - board["start_page"] == 3
@@ -217,7 +207,7 @@ def test_distant_repeat_kept_separate(tmp_path: Path):
          {"text": "Body 2", "size": _BODY_SIZE}],
     ]
     htm = _fixture_hth(tmp_path, data)
-    text, offsets, sections, meta = hf.parse_filing(htm)
+    _text, _offsets, sections, _meta = hf.parse_filing(htm)
     balance_sheets = [s for s in sections if "Balance Sheet" in s["title"]]
     assert len(balance_sheets) == 2
     assert balance_sheets[0]["start_page"] < balance_sheets[1]["start_page"]
@@ -235,7 +225,7 @@ def test_xbrl_elements_are_stripped(tmp_path: Path):
         '<!DOCTYPE html><html><body>'
         '<p style="font-size: 10pt"><ix:name="Revenue">12345</ix:name> Actual text here</p>'
         '</body></html>', encoding="utf-8")
-    text, offsets, sections, meta = hf.parse_filing(htm)
+    text, _offsets, _sections, _meta = hf.parse_filing(htm)
     # The xbrl markup should be stripped; only prose remains
     assert "ix:name" not in text
     assert "Actual text here" in text
@@ -253,7 +243,7 @@ def test_script_and_style_tags_stripped(tmp_path: Path):
     d.mkdir()
     htm = d / "TEST_10K_2024.htm"
     htm.write_text(html, encoding="utf-8")
-    text, offsets, sections, meta = hf.parse_filing(htm)
+    text, _offsets, _sections, _meta = hf.parse_filing(htm)
     assert "should not appear" not in text
     assert "color: red" not in text
     assert "Real text" in text
@@ -300,7 +290,7 @@ def test_degenerate_no_page_breaks(tmp_path: Path):
     pages = hf.doc_pages(htm)
     assert len(pages) == 1
     # parse_filing should also return 1 page
-    text, offsets, sections, meta = hf.parse_filing(htm)
+    _text, _offsets, _sections, meta = hf.parse_filing(htm)
     assert meta["pages"] == 1
 
 
@@ -391,7 +381,7 @@ def test_grep_reports_hit_count(tmp_path: Path):
     htm = _fixture_hth(tmp_path, data)
     idx = hf.build_index(htm)
     # Write a proper txt
-    text, offsets, sections, meta = hf.parse_filing(htm)
+    text, offsets, sections, _meta = hf.parse_filing(htm)
     hf._txt_path(htm).write_text(text, encoding="utf-8")
     hf._index_path(htm).write_text(
         json.dumps({**idx, "page_offsets": offsets, "sections": sections}, indent=1),
@@ -412,7 +402,7 @@ def test_grep_paginates_correctly(tmp_path: Path):
     ]
     htm = _fixture_hth(tmp_path, data)
     idx = hf.build_index(htm)
-    text, offsets, sections, meta = hf.parse_filing(htm)
+    text, offsets, sections, _meta = hf.parse_filing(htm)
     hf._txt_path(htm).write_text(text, encoding="utf-8")
     hf._index_path(htm).write_text(
         json.dumps({**idx, "page_offsets": offsets, "sections": sections}, indent=1),
@@ -436,7 +426,7 @@ def test_read_page_returns_exactly_one_page(tmp_path: Path):
         for i in range(5)
     ]
     htm = _fixture_hth(tmp_path, data)
-    idx = hf.build_index(htm)
+    hf.build_index(htm)
 
     r = hf.read_page("WIDG", 3, fy=2024, base_dir=htm.parent.parent)
     assert r["page"] == 3
@@ -451,7 +441,7 @@ def test_read_page_rejects_out_of_range(tmp_path: Path):
     data = [[{"text": "Line", "size": _BODY_SIZE}]]
     htm = _fixture_hth(tmp_path, data)
     hf.build_index(htm)
-    text, offsets, sections, meta = hf.parse_filing(htm)
+    text, offsets, sections, _meta = hf.parse_filing(htm)
     hf._txt_path(htm).write_text(text, encoding="utf-8")
     idx = hf._read_index(htm)
     idx["page_offsets"] = offsets
@@ -471,7 +461,7 @@ def test_parse_filing_returns_consistent_text_and_offsets(tmp_path: Path):
         [{"text": "Second page content", "size": _BODY_SIZE}],
     ]
     htm = _fixture_hth(tmp_path, data)
-    text, offsets, sections, meta = hf.parse_filing(htm)
+    text, offsets, _sections, meta = hf.parse_filing(htm)
     assert offsets == [0, len("First page content")]
     assert meta["pages"] == 2
     # Each page is joined with space, pages concatenated directly
@@ -541,7 +531,7 @@ def test_corpus_pg_bold_required(corpus_base):
     htm = corpus_base / "PG" / "PG_10K_2023.htm"
     if not htm.exists():
         pytest.skip("PG 2023 not on disk")
-    text, offsets, sections, meta = hf.parse_filing(htm)
+    _text, _offsets, sections, meta = hf.parse_filing(htm)
     assert meta["pages"] > 0
     assert len(sections) >= 50  # PG has many sections due to bold detection
     titles = [s["title"] for s in sections]
@@ -554,7 +544,7 @@ def test_corpus_aapl_typical_behavior(corpus_base):
     htm = corpus_base / "AAPL" / "AAPL_10K_2023.htm"
     if not htm.exists():
         pytest.skip("AAPL 2023 not on disk")
-    text, offsets, sections, meta = hf.parse_filing(htm)
+    _text, _offsets, sections, meta = hf.parse_filing(htm)
     assert meta["pages"] >= 50
     assert len(sections) >= 30
     titles = [s["title"] for s in sections]
@@ -571,7 +561,7 @@ def test_corpus_are_degenerate(corpus_base):
     pb_count = len(hf._BREAKE.findall(raw))
     # ARE 2024 has 0 page-break markers
     assert pb_count == 0
-    text, offsets, sections, meta = hf.parse_filing(htm)
+    _text, _offsets, _sections, meta = hf.parse_filing(htm)
     assert meta["pages"] == 1  # degenerate: one page
 
 

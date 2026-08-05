@@ -1,23 +1,19 @@
-"""MarketConfig — the value object unifying what previously differed ad hoc
-between markets/nse.py and markets/snp.py: currency, fiscal-year rule, ticker
-suffix, universe fetching, staleness policy, and optional per-market steps
-(shareholding/credit-ratings enrichment, raw CSV export).
-
-Named MarketConfig rather than Market to avoid colliding with the Market
-StrEnum already exported by screener.freshness (a simple NSE/SNP discriminator
-for quarter-lag policies) -- markets/nse.py imports both.
+"""MarketConfig — the value object driving run_pipeline for one market:
+currency, fiscal-year rule, ticker suffix, universe fetching, staleness
+policy, and optional per-market steps (shareholding/credit-ratings
+enrichment, raw CSV export)
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
-from typing import Callable
 
 from .config import (
-    COMPANIES_DIR,
     INDICES_DIR,
+    NSE_COMPANIES_DIR,
     NSE_FAILED_TICKERS,
     RAW_DIR,
     SNP_COMPANIES_DIR,
@@ -25,7 +21,12 @@ from .config import (
     SNP_INDICES_DIR,
 )
 from .fetch import fetch_nse500_tickers, fetch_sp500_universe
-from .freshness import AgeDays, Market as MarketId, QuarterLag
+from .freshness import AgeDays, QuarterLag
+from .freshness import NSE
+
+# Both markets support the same refresh modes; run_pipeline validates against
+# this so a typo'd mode fails loud instead of silently falling through.
+ALL_MODES = ("quick-sync", "full-sync")
 
 
 @dataclass(frozen=True)
@@ -38,34 +39,15 @@ class MarketConfig:
     companies_dir: Path
     indices_dir: Path
     failed_tickers_path: Path
-    valid_modes: tuple[str, ...]
     fetch_universe: Callable[[], tuple[list[str], dict[str, dict] | None]]
     staleness_policies: Callable[[int], tuple]
     fetch_label: str = "companies"
-    # NOTE: enrich.py's get_stale_symbols/process_symbols hardcode NSE's
-    # COMPANIES_DIR internally and take no market parameter -- this field only
-    # toggles *whether* the enrichment loop runs, safe today only because SNP's
-    # tuple is empty. Populating it for SNP without first parameterizing
-    # enrich.py by market would read/write against NSE's company directory.
+    valid_modes: tuple[str, ...] = ALL_MODES
     enrichment_datasets: tuple[str, ...] = ()
     raw_csv_dir: Path | None = None
-    # Phase 5: SNP's historical_trends come from SEC EDGAR XBRL company-facts
-    # (screener.statements.AnnualStatements.from_edgar), not yfinance's annual
-    # DataFrames -- a CIK is required to fetch them. NSE has no EDGAR/CIK
-    # concept at all.
     uses_edgar: bool = False
-    # SNP-only: institutional_ownership (screener.transform.
-    # build_institutional_ownership) needs ticker.institutional_holders, a
-    # distinct yfinance call NSE has no use for.
     fetch_institutional_holders: bool = False
-    # Phase 6: output-key -> metadata-key, read from fetch_universe's
-    # per-symbol metadata dict and copied onto the company JSON's top level
-    # by build_company_json. Differs by market because the universe sources
-    # differ (NSE's official CSV vs. Wikipedia's S&P table).
     metadata_fields: dict[str, str] = field(default_factory=dict)
-    # Trend series: list of (output_key, AnnualLineItems attribute name) pairs.
-    # NSE gets balance-sheet fields (roe, debt_to_equity, free_cash_flow);
-    # SNP (EDGAR) does not, so its list is shorter.
     trend_series: tuple[tuple[str, str], ...] = ()
 
 
@@ -91,7 +73,7 @@ def _snp_universe() -> tuple[list[str], dict[str, dict]]:
     return [c["symbol"] for c in companies], metadata
 
 
-_NSE_QUARTER_POLICY = QuarterLag(field=("shareholding", "quarters", -1), market=MarketId.NSE)
+_NSE_QUARTER_POLICY = QuarterLag(field=("shareholding", "quarters", -1), market=NSE)
 
 
 def _nse_staleness_policies(days_old: int) -> tuple:
@@ -108,10 +90,9 @@ NSE = MarketConfig(
     currency="INR",
     ticker_suffix=".NS",
     fiscal_year=_nse_fiscal_year,
-    companies_dir=COMPANIES_DIR,
+    companies_dir=NSE_COMPANIES_DIR,
     indices_dir=INDICES_DIR,
     failed_tickers_path=NSE_FAILED_TICKERS,
-    valid_modes=("full", "incremental", "quick", "sync-universe", "transform-only"),
     fetch_universe=_nse_universe,
     staleness_policies=_nse_staleness_policies,
     fetch_label="stocks",
@@ -139,7 +120,6 @@ SNP = MarketConfig(
     companies_dir=SNP_COMPANIES_DIR,
     indices_dir=SNP_INDICES_DIR,
     failed_tickers_path=SNP_FAILED_TICKERS,
-    valid_modes=("full", "incremental", "sync-universe", "rebuild"),
     fetch_universe=_snp_universe,
     staleness_policies=_snp_staleness_policies,
     uses_edgar=True,
@@ -159,22 +139,3 @@ SNP = MarketConfig(
 # ── Registry ─────────────────────────────────────────────────────────
 
 MARKETS: dict[str, MarketConfig] = {"nse": NSE, "snp": SNP}
-
-
-def coerce_mode(mode: str, market: MarketConfig) -> str:
-    """Map a CLI mode to one valid for `market`, or raise.
-
-    Cross-market fallback: 'quick' on SNP → 'incremental', 'rebuild' on NSE
-    → 'transform-only'. Every other mode is validated against the market's
-    own valid_modes tuple.
-    """
-    if mode in market.valid_modes:
-        return mode
-    fallbacks = {"quick": "incremental", "rebuild": "transform-only"}
-    mapped = fallbacks.get(mode)
-    if mapped and mapped in market.valid_modes:
-        return mapped
-    raise ValueError(
-        f"{market.label}: mode {mode!r} not supported "
-        f"(valid modes: {market.valid_modes})"
-    )

@@ -39,3 +39,19 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[tool.ruff.lint]
+ignore = [
+    # This is a single-machine local batch pipeline over calendar-date fiscal
+    # concepts (fiscal years/quarters, cache age, staleness) -- there is no
+    # timezone ambiguity to guard against, and `date` objects have no tzinfo
+    # concept to add in the first place.
+    "DTZ005",  # datetime.now() without tz
+    "DTZ011",  # date.today()
+    "DTZ012",  # date.fromtimestamp() without tz
+    # Batch fetch/parse loops (scraping, PDF/HTML indexing) deliberately catch
+    # any exception so one bad symbol/file doesn't kill a multi-hundred-item
+    # run -- narrowing to specific exception types would defeat that and risk
+    # missing real failures from bs4/lxml/network/JSON call sites.
+    "BLE001",  # blind except Exception
+]

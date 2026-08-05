@@ -1,27 +1,12 @@
 """ScreeningSummary -- the flat screening_summary.json/{nse,snp} DB table
-schema, declared once here instead of being assembled inline inside
-index.py's build_indices loop body, plus the industry-percentile computation
-that both the flat table and each company's own industry_comparison read from.
-
-industry_comparison was previously always None at the build_company_json
-call site (zero writers, despite being fully specified in data/SCHEMA.md) --
-compute_industry_comparison below is what index.py's build_indices now calls
-to fill it in, for both markets.
+schema, plus the industry-percentile computation that both the flat table
+and each company's own industry_comparison read from.
 """
 
-import math
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
-# ── Safe numeric conversion ───────────────────────────────────────────
-
-def _safe_float(v):
-    if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
-        return None
-    try:
-        f = float(v)
-        return f if not (math.isnan(f) or math.isinf(f)) else None
-    except (ValueError, TypeError):
-        return None
+from .transform import safe_float as _safe_float
 
 
 def _percentile(value, sorted_values):

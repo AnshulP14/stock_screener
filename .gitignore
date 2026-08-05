@@ -26,7 +26,6 @@ env/
 # Bootstrap: python scripts/data_refresh.py --mode full
 data/*
 !data/SCHEMA.md
-!data/SQL.md
 
 # IDE
 .vscode/

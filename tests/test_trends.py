@@ -6,7 +6,7 @@ derived by re-running the code under test.
 
 import pytest
 
-from screener.trends import (
+from screener.transform import (
     GrowthTrend,
     LeverageBand,
     MarginDirection,

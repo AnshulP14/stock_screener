@@ -1,27 +1,93 @@
-"""Build indices: screening_summary + industry_stats + DuckDB."""
+"""Build indices: screening_summary + industry_stats + manifest management.
+
+Includes former store.py: load_company, save_company, merge_company,
+delete_company, list_symbols, iter_companies.
+"""
 
 import json
+import threading
+from collections.abc import Iterator
 from datetime import datetime
 from pathlib import Path
 
-import pandas as pd
-
-from .config import (
-    BUILD_DB_DB_PATH,
-    INDICES_DIR,
-    MANIFEST_PATH,
-)
-from .store import CompanyStore
+from .config import INDICES_DIR, MANIFEST_PATH
 from .summary import compute_industry_comparison, compute_industry_stats, compute_summary_row
+
+# ── Store helpers (former store.py) ────────────────────────────────
+
+_locks_guard = threading.Lock()
+_locks: dict[str, threading.Lock] = {}
+
+
+def _lock_for(symbol: str) -> threading.Lock:
+    """One lock per symbol, shared by every caller in this process -- so two
+    stages merging into the same company file at once serialize instead of
+    racing (last-write-wins would silently drop one stage's fields)."""
+    with _locks_guard:
+        return _locks.setdefault(symbol, threading.Lock())
+
+
+def _company_path(dir_path: Path, symbol: str) -> Path:
+    return dir_path / f"{symbol}.json"
+
+
+def load_company(dir_path: Path, symbol: str) -> dict:
+    """Load a company JSON. Raises FileNotFoundError if missing."""
+    with open(_company_path(dir_path, symbol)) as f:
+        return json.load(f)
+
+
+def save_company(dir_path: Path, symbol: str, data: dict) -> None:
+    """Atomically write a company JSON (tmp + rename)."""
+    dir_path.mkdir(parents=True, exist_ok=True)
+    tmp = dir_path / f".{symbol}.json.tmp"
+    tmp.write_text(json.dumps(data, indent=2))
+    tmp.replace(_company_path(dir_path, symbol))
+
+
+def merge_company(dir_path: Path, symbol: str, updates: dict) -> None:
+    """Read-modify-write a company JSON: shallow-merge `updates` into whatever
+    is already on disk (or {} if none) instead of overwriting the whole file.
+    Lets independent stages (fundamentals, shareholding, ratings) each own
+    their own top-level keys without clobbering each other."""
+    with _lock_for(symbol):
+        try:
+            existing = load_company(dir_path, symbol)
+        except FileNotFoundError:
+            existing = {}
+        existing.update(updates)
+        save_company(dir_path, symbol, existing)
+
+
+def delete_company(dir_path: Path, symbol: str) -> None:
+    """Remove a company file. Silently no-ops if missing."""
+    _company_path(dir_path, symbol).unlink(missing_ok=True)
+
+
+def list_symbols(dir_path: Path) -> list[str]:
+    """Sorted list of company symbols (file stems) on disk."""
+    return sorted(p.stem for p in dir_path.glob("*.json"))
+
+
+def iter_companies(dir_path: Path) -> Iterator[tuple[Path, dict]]:
+    """Yield (path, company_dict) for every company file.
+
+    Skips unreadable files (bad JSON, permission errors) rather than
+    crashing the whole iteration."""
+    for path in sorted(dir_path.glob("*.json")):
+        try:
+            yield path, json.loads(path.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
 
 
 # ── Index building ──────────────────────────────────────────────────
 
 def build_indices(
     *,
-    store: CompanyStore,
+    companies_dir: Path,
     indices_dir: Path = INDICES_DIR,
-) -> dict:
+) -> dict | None:
     """Build screening_summary.json and industry_stats.json from company
     JSONs, and write each company's own industry_comparison back onto its
     file -- that needs every company loaded first (see
@@ -29,14 +95,14 @@ def build_indices(
     per-symbol fetch time the way the rest of the company JSON is built.
 
     Args:
-        store: CompanyStore over the companies directory
+        companies_dir: directory of per-company JSON files
         indices_dir: directory to write screening_summary.json and industry_stats.json
 
     Returns:
         dict with summary count, industry count, and company count
     """
     print("  Building indices...")
-    loaded = list(store.iter_all())
+    loaded = list(iter_companies(companies_dir))
 
     if not loaded:
         print("  No companies found. Nothing to build.")
@@ -78,7 +144,7 @@ def build_indices(
         if company.get("industry_comparison") == comparison:
             continue
         company["industry_comparison"] = comparison
-        store.save(path.stem, company)
+        save_company(companies_dir, path.stem, company)
         updated += 1
 
     print(f"  screening_summary.json: {len(summary)} companies")
@@ -86,82 +152,6 @@ def build_indices(
     if updated:
         print(f"  industry_comparison: updated {updated} company file(s)")
     return {"summary": len(summary), "industries": len(industry_stats), "companies": len(all_companies)}
-
-
-def rebuild_market_db(
-    *,
-    market: str,
-    companies_dir: Path,
-    indices_dir: Path,
-) -> dict:
-    """Rebuild DuckDB tables for a single market.
-
-    Args:
-        market: "nse" or "snp"
-        companies_dir: directory containing company JSON files
-        indices_dir: directory containing screening_summary.json and industry_stats.json
-
-    Returns:
-        dict with table counts
-    """
-    import duckdb
-
-    summary_path = indices_dir / "screening_summary.json"
-    companies_glob = str(companies_dir / "*.json")
-    stats_path = indices_dir / "industry_stats.json"
-    prefix = market.lower()
-
-    summary = json.load(open(summary_path))
-    companies = summary.get("companies", [])
-
-    con = duckdb.connect(str(BUILD_DB_DB_PATH))
-    try:
-        con.register("_summary_rows", pd.DataFrame(companies))
-        con.execute(f"CREATE OR REPLACE TABLE {prefix} AS SELECT * FROM _summary_rows")
-
-        con.execute(f"""
-            CREATE OR REPLACE TABLE {prefix}_companies AS
-            SELECT * FROM read_json_auto(?, union_by_name=true)
-        """, [companies_glob])
-        company_count = con.execute(f"SELECT count(*) FROM {prefix}_companies").fetchone()[0]
-
-        stats_count = 0
-        if stats_path.exists():
-            stats = json.load(open(stats_path))
-            rows = [{"industry": k, **v} for k, v in stats.items()]
-            con.register("_stats_rows", pd.DataFrame(rows))
-            con.execute(
-                f"CREATE OR REPLACE TABLE {prefix}_industry_stats AS SELECT * FROM _stats_rows"
-            )
-            stats_count = len(rows)
-    finally:
-        con.close()
-
-    result = {
-        "rebuilt_at": datetime.now().isoformat(),
-        "tables": {
-            f"{prefix}": len(companies),
-            f"{prefix}_companies": company_count,
-            f"{prefix}_industry_stats": stats_count,
-        },
-    }
-    update_manifest(market, {"db": result}, touch_generated_at=False)
-    return result
-
-
-def drop_market_tables(market: str) -> None:
-    """Drop a market's tables so a market whose curated JSON no longer exists
-    doesn't leave stale rows behind in screener.db (rebuild_market_db only
-    replaces tables for markets it actually rebuilds)."""
-    import duckdb
-
-    prefix = market.lower()
-    con = duckdb.connect(str(BUILD_DB_DB_PATH))
-    try:
-        for suffix in ("", "_companies", "_industry_stats"):
-            con.execute(f"DROP TABLE IF EXISTS {prefix}{suffix}")
-    finally:
-        con.close()
 
 
 def update_manifest(market: str, entry: dict, *, touch_generated_at: bool = True) -> None:

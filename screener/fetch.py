@@ -2,10 +2,8 @@
 
 import io
 import json
-import math
 import os
 import threading
-import time
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -28,19 +26,9 @@ from .config import (
     WIKIPEDIA_URL,
     YFINANCE_USER_AGENT,
 )
+from .runner import AdaptiveRateLimiter
 
-
-# ── Helpers ──────────────────────────────────────────────────────────
-
-def safe_float(v: Any) -> float | None:
-    """Convert to float; return None for invalid, NaN, or Inf."""
-    if v is None or (isinstance(v, float) and (math.isnan(v) or math.isinf(v))):
-        return None
-    try:
-        f = float(v)
-        return f if not (math.isnan(f) or math.isinf(f)) else None
-    except (ValueError, TypeError):
-        return None
+_EDGAR_LIMITER = AdaptiveRateLimiter(base_interval=EDGAR_RATE_LIMIT)
 
 
 def _df_or_empty(df: pd.DataFrame | None) -> pd.DataFrame:
@@ -64,6 +52,19 @@ def _edgar_ua() -> str:
     if EDGAR_CONTACT_FILE.exists():
         return f"sp500-screener-bot ({EDGAR_CONTACT_FILE.read_text().strip()})"
     return YFINANCE_USER_AGENT
+
+
+def _edgar_get(url: str, **kwargs) -> requests.Response:
+    """GET against SEC EDGAR, throttled and adaptive to 429s -- shared by every
+    EDGAR call site (facts, submissions, document download) so a throttling
+    response on any of them backs off the others too."""
+    _EDGAR_LIMITER.acquire()
+    resp = requests.get(url, headers={"User-Agent": _edgar_ua()}, **kwargs)
+    if resp.status_code == 429:
+        _EDGAR_LIMITER.penalize()
+    else:
+        _EDGAR_LIMITER.reward()
+    return resp
 
 
 # ── NSE500 ───────────────────────────────────────────────────────────
@@ -141,9 +142,8 @@ def fetch_edgar_facts(symbol: str, cik: int | None) -> dict | None:
                 return json.load(f)
 
     try:
-        time.sleep(EDGAR_RATE_LIMIT)  # ~8 req/sec
         url = EDGAR_FACTS.format(cik=cik)
-        resp = requests.get(url, headers={"User-Agent": _edgar_ua()}, timeout=30)
+        resp = _edgar_get(url, timeout=30)
         resp.raise_for_status()
         facts = resp.json()
         with open(cache_path, "w") as f:
@@ -242,9 +242,8 @@ def fetch_edgar_submissions(cik: int) -> dict | None:
     once per annual-report download, not on every pipeline run.
     """
     try:
-        time.sleep(EDGAR_RATE_LIMIT)
         url = EDGAR_SUBMISSIONS.format(cik=cik)
-        resp = requests.get(url, headers={"User-Agent": _edgar_ua()}, timeout=30)
+        resp = _edgar_get(url, timeout=30)
         resp.raise_for_status()
         return resp.json()
     except Exception as e:
@@ -290,15 +289,13 @@ def get_10k_filings(submissions: dict, max_reports: int = 5) -> list[dict]:
 def download_edgar_document(url: str, output_path: Path) -> bool:
     """Download a single EDGAR filing document (10-K htm/pdf) to disk."""
     try:
-        time.sleep(EDGAR_RATE_LIMIT)
-        resp = requests.get(url, headers={"User-Agent": _edgar_ua()}, timeout=60, stream=True)
+        resp = _edgar_get(url, timeout=60, stream=True)
         if resp.status_code != 200:
             return False
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "wb") as f:
-            for chunk in resp.iter_content(chunk_size=8192):
-                f.write(chunk)
+            f.writelines(resp.iter_content(chunk_size=8192))
 
         if output_path.stat().st_size < 5000:
             output_path.unlink()
@@ -308,24 +305,3 @@ def download_edgar_document(url: str, output_path: Path) -> bool:
     except Exception as e:
         print(f"  Download failed for {url}: {e}")
         return False
-
-
-def fetch_ownership_snapshot(symbol: str) -> dict[str, Any]:
-    """Lightweight fetch for institutional_ownership alone: ticker.info (for
-    heldPercentInsiders/heldPercentInstitutions) and ticker.institutional_holders.
-
-    Skips the six statement calls fetch_ticker_data makes -- for callers that
-    already have fresh snapshot/statement data on disk and only need to
-    (re)compute institutional_ownership (see transform.build_institutional_ownership).
-    """
-    try:
-        with _YFINANCE_LOCK:
-            ticker = yf.Ticker(symbol, session=_yf_session())
-            return {
-                "symbol": symbol,
-                "info": ticker.info or {},
-                "institutional_holders": _df_or_empty(ticker.institutional_holders),
-                "error": None,
-            }
-    except Exception as e:
-        return {"symbol": symbol, "info": {}, "institutional_holders": pd.DataFrame(), "error": str(e)}

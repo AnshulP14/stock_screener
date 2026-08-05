@@ -11,39 +11,34 @@ post-quarter-end lag, not derived by re-running the code under test:
 import json
 from datetime import date
 
-import pytest
-
-from screener.freshness import AgeDays, Market, QuarterLag, expected_latest_quarter, stale_symbols
-
+from screener.freshness import AgeDays, NSE, QuarterLag, expected_latest_quarter, stale_symbols
 
 # ── expected_latest_quarter ─────────────────────────────────────────
 
 def test_quarter_lag_not_yet_cleared_on_feb_1():
-    # Dec 2025 quarter-end (Dec 31) needs until Feb 14 to clear a 45-day lag.
-    assert expected_latest_quarter(Market.NSE, today=date(2026, 2, 1)) == "Sep 2025"
+    assert expected_latest_quarter(today=date(2026, 2, 1)) == "Sep 2025"
 
 
 def test_quarter_lag_day_before_boundary_still_prior_quarter():
-    assert expected_latest_quarter(Market.NSE, today=date(2026, 2, 13)) == "Sep 2025"
+    assert expected_latest_quarter(today=date(2026, 2, 13)) == "Sep 2025"
 
 
 def test_quarter_lag_clears_exactly_on_day_45():
-    assert expected_latest_quarter(Market.NSE, today=date(2026, 2, 14)) == "Dec 2025"
+    assert expected_latest_quarter(today=date(2026, 2, 14)) == "Dec 2025"
 
 
 def test_quarter_lag_cleared_on_may_16():
-    # Mar 2026 quarter-end (Mar 31) clears its lag on May 15; May 16 is past it.
-    assert expected_latest_quarter(Market.NSE, today=date(2026, 5, 16)) == "Mar 2026"
+    assert expected_latest_quarter(today=date(2026, 5, 16)) == "Mar 2026"
 
 
 def test_quarter_lag_day_before_may_boundary_still_prior_quarter():
-    assert expected_latest_quarter(Market.NSE, today=date(2026, 5, 14)) == "Dec 2025"
+    assert expected_latest_quarter(today=date(2026, 5, 14)) == "Dec 2025"
 
 
 # ── stale_symbols: QuarterLag policy ────────────────────────────────
 
 def _quarter_policy():
-    return QuarterLag(field=("shareholding", "quarters", -1), market=Market.NSE)
+    return QuarterLag(field=("shareholding", "quarters", -1), market=NSE)
 
 
 def test_missing_company_file_is_stale_under_quarter_policy(tmp_path):
@@ -51,7 +46,7 @@ def test_missing_company_file_is_stale_under_quarter_policy(tmp_path):
 
 
 def test_up_to_date_shareholding_is_not_stale(tmp_path):
-    latest_q = expected_latest_quarter(Market.NSE, today=date(2026, 7, 27))
+    latest_q = expected_latest_quarter(today=date(2026, 7, 27))
     (tmp_path / "RELIANCE.json").write_text(json.dumps({
         "shareholding": {"quarters": ["Jun 2020", latest_q]}
     }))
@@ -109,7 +104,7 @@ def test_age_policy_missing_file_is_stale(tmp_path):
 # ── stale_symbols: explicit `symbols` universe catches never-fetched ─
 
 def test_symbols_param_flags_never_fetched_alongside_existing_files(tmp_path):
-    latest_q = expected_latest_quarter(Market.NSE, today=date(2026, 7, 27))
+    latest_q = expected_latest_quarter(today=date(2026, 7, 27))
     (tmp_path / "RELIANCE.json").write_text(json.dumps({
         "shareholding": {"quarters": [latest_q]}
     }))

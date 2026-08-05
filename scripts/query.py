@@ -10,7 +10,7 @@ Usage:
 
 import argparse
 
-from screener.query import query
+from screener.db import query
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Query data/screener.db with SQL")

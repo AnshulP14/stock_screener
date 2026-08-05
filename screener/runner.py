@@ -1,24 +1,17 @@
-"""Concurrent fetch→save engine shared by both market pipelines.
-
-Replaces the per-market serial loops that held every result in memory and wrote
-them only at the end. Guarantees here:
-
-- **Durable**: each company is transformed and written as its fetch completes,
-  so a crash, a rate-limit wall, or Ctrl-C keeps everything already fetched.
-- **Bounded memory**: raw yfinance DataFrames are dropped per ticker instead of
-  accumulating across the whole universe.
-- **Actually concurrent**: a real thread pool, throttled by a shared rate
-  limiter that backs off when the upstream starts returning 429s.
-- **Isolated**: one bad ticker fails that ticker, never the batch.
+"""Concurrent fetch→save engine shared by both market pipelines. Each
+company is transformed and written as its fetch completes (durable against
+crashes/Ctrl-C), on a thread pool throttled by a shared adaptive rate
+limiter, with one bad ticker failing only that ticker.
 """
 
 import random
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from .config import (
     FETCH_MAX_RETRIES,
@@ -27,7 +20,6 @@ from .config import (
     RATE_LIMIT_MAX_PENALTY,
     RATE_LIMIT_RECOVERY_STREAK,
 )
-
 
 # ── Rate limiting ───────────────────────────────────────────────────
 
@@ -47,12 +39,13 @@ def is_rate_limit_error(err: str | None) -> bool:
 
 
 class AdaptiveRateLimiter:
-    """Enforces a minimum interval between fetch starts across all threads.
+    """Enforces a minimum interval between request starts across all threads.
 
     The interval widens when the upstream signals throttling and decays back
     toward the baseline after a streak of clean responses, so a run that trips
-    Yahoo's limiter slows down instead of burning through the rest of the
-    universe collecting 429s.
+    a host's rate limiter slows down instead of burning through the rest of
+    the batch collecting 429s. One instance per rate-limited host (yfinance,
+    SEC EDGAR, screener.in each get their own).
     """
 
     def __init__(self, base_interval: float = RATE_LIMIT_DELAY,
@@ -99,6 +92,12 @@ class AdaptiveRateLimiter:
                 self._penalty = max(0.0, self._penalty / 2 - 0.25)
 
 
+# One shared limiter for screener.in, used by both the shareholding/ratings
+# enrichment and the NSE annual-report scrape -- they hit the same host, so a
+# limiter each would double the real request rate under either one's back.
+SCREENER_LIMITER = AdaptiveRateLimiter(base_interval=RATE_LIMIT_DELAY)
+
+
 # ── Results ─────────────────────────────────────────────────────────
 
 @dataclass
@@ -107,14 +106,6 @@ class RunReport:
     saved: list[Any] = field(default_factory=list)
     failed: list[tuple[str, str]] = field(default_factory=list)
     elapsed: float = 0.0
-
-    @property
-    def ok_count(self) -> int:
-        return len(self.saved)
-
-    @property
-    def fail_count(self) -> int:
-        return len(self.failed)
 
 
 def write_failure_log(path: Path, failures: list[tuple[str, str]]) -> None:
@@ -142,19 +133,9 @@ def run_fetch_pipeline(
 ) -> RunReport:
     """Fetch, transform and persist each symbol concurrently.
 
-    Args:
-        symbols: bare symbols (no exchange suffix) to process.
-        fetch_fn: symbol → raw result dict; may carry a non-None "error" key.
-        handle_fn: (symbol, raw) → small record to keep, called once per
-            successful fetch. Does the transform + write, so results become
-            durable immediately. Raising here fails only that symbol.
-        workers: thread pool size.
-        limiter: shared rate limiter; created from defaults when omitted.
-        max_retries: extra attempts for throttled/transient fetches.
-        progress_every: emit a progress line every N completions.
-
-    Returns:
-        RunReport with the accumulated handle_fn records and (symbol, error) failures.
+    `fetch_fn` returns a raw dict (may carry a non-None "error" key); `handle_fn`
+    does the transform + write per successful fetch, so results become durable
+    immediately. Returns a RunReport of saved records and (symbol, error) failures.
     """
     report = RunReport()
     if not symbols:
@@ -222,11 +203,11 @@ def run_fetch_pipeline(
                     extra = f", throttled +{limiter.interval - limiter.base_interval:.1f}s" \
                         if limiter.interval > limiter.base_interval else ""
                     print(f"  {n}/{total} ({n * 100 // total}%)  "
-                          f"ok={report.ok_count} fail={report.fail_count}  "
+                          f"ok={len(report.saved)} fail={len(report.failed)}  "
                           f"eta {eta / 60:.1f}m{extra}")
         except KeyboardInterrupt:
             print("\n  Interrupted — cancelling pending fetches "
-                  f"({report.ok_count} already saved).")
+                  f"({len(report.saved)} already saved).")
             for f in futures:
                 f.cancel()
             raise

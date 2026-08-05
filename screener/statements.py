@@ -1,33 +1,17 @@
 """AnnualStatements — typed year -> line-item adapter over yfinance's three
-raw annual DataFrames (income, balance sheet, cashflow).
-
-build_historical_trends used to pull each line item out with its own
-_row_values(df, label) call and zip the resulting lists positionally (e.g.
-net_income from annual_income zipped against stockholders_equity from
-annual_balance). That's silently wrong whenever two statements don't cover
-the same fiscal years — common near IPOs or restatements, where yfinance
-returns a shorter balance-sheet history than the income statement. Looking
-each line item up by its own fiscal year, as from_yfinance does below, fixes
-that: a year missing from one statement yields None for that field in that
-year rather than shifting every later value by one position.
+raw annual DataFrames (income, balance sheet, cashflow). Looks up each line
+item by its own fiscal year rather than positional zip, so a year missing
+from one statement doesn't shift every later value out of alignment.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 import pandas as pd
 
-
-def _safe_float(v) -> float | None:
-    if v is None:
-        return None
-    try:
-        f = float(v)
-        return f if f == f and abs(f) != float("inf") else None  # NaN != NaN
-    except (ValueError, TypeError):
-        return None
+from .transform import safe_float as _safe_float
 
 
 def _process_annual_statement(
@@ -103,17 +87,10 @@ _EDGAR_FIELD_TAGS: dict[str, tuple[str, ...]] = {
 
 
 def _edgar_annual_values(tag_facts: dict) -> dict[int, float]:
-    """fiscal year -> value, from one GAAP tag's annual entries.
-
-    Keyed by EDGAR's own `fy` (only `form == "10-K"` and `fp == "FY"` entries
-    count -- everything else in a tag's unit list is a 10-Q or a restated
-    prior period reported alongside a later quarter). This is EDGAR's own
-    fiscal-year label, not one recomputed from a period-end date: SEC's fy/fp
-    already reflects each filer's actual fiscal calendar, including
-    non-calendar year-ends, which a single date-based rule can't (see
-    MarketConfig.fiscal_year's docstring). When a tag carries two annual
-    entries for the same fy (a restatement), the one filed most recently wins.
-    """
+    """fiscal year -> value, from one GAAP tag's annual entries. Keyed by
+    EDGAR's own `fy` (only `form == "10-K"` and `fp == "FY"` entries count);
+    when a tag carries two entries for the same fy, the most recently filed
+    wins."""
     best: dict[int, tuple[str, float]] = {}
     for unit_values in tag_facts.get("units", {}).values():
         for entry in unit_values:
@@ -147,45 +124,16 @@ def _edgar_field_values(us_gaap: dict, field: str) -> dict[int, float]:
 class AnnualStatements:
     by_year: dict[int, AnnualLineItems]
 
+    _LINE_ITEMS = tuple(AnnualLineItems.__dataclass_fields__)  # type: ignore[has-type]
+
     @property
     def years(self) -> list[int]:
         return sorted(self.by_year)
 
-    @property
-    def revenue(self) -> list[float | None]:
-        return [self.by_year[y].revenue for y in self.years]
-
-    @property
-    def net_income(self) -> list[float | None]:
-        return [self.by_year[y].net_income for y in self.years]
-
-    @property
-    def diluted_eps(self) -> list[float | None]:
-        return [self.by_year[y].diluted_eps for y in self.years]
-
-    @property
-    def gross_profit(self) -> list[float | None]:
-        return [self.by_year[y].gross_profit for y in self.years]
-
-    @property
-    def operating_income(self) -> list[float | None]:
-        return [self.by_year[y].operating_income for y in self.years]
-
-    @property
-    def free_cash_flow(self) -> list[float | None]:
-        return [self.by_year[y].free_cash_flow for y in self.years]
-
-    @property
-    def total_debt(self) -> list[float | None]:
-        return [self.by_year[y].total_debt for y in self.years]
-
-    @property
-    def stockholders_equity(self) -> list[float | None]:
-        return [self.by_year[y].stockholders_equity for y in self.years]
-
-    @property
-    def operating_cash_flow(self) -> list[float | None]:
-        return [self.by_year[y].operating_cash_flow for y in self.years]
+    def __getattr__(self, name: str) -> list[float | None]:
+        if name in self._LINE_ITEMS:
+            return [self.by_year[y].__getattribute__(name) for y in self.years]
+        raise AttributeError(f"{type(self).__name__!r} has no attribute {name!r}")
 
     @classmethod
     def from_yfinance(
@@ -194,7 +142,7 @@ class AnnualStatements:
         balance: pd.DataFrame,
         cashflow: pd.DataFrame,
         fiscal_year_fn: Callable[[pd.Timestamp], int],
-    ) -> "AnnualStatements":
+    ) -> AnnualStatements:
         """years_available stays anchored to the income statement's fiscal
         years (matching the pre-existing contract); balance/cashflow are
         looked up per-year against that anchor, not zipped positionally.
@@ -220,7 +168,7 @@ class AnnualStatements:
         return cls(by_year=by_year)
 
     @classmethod
-    def from_edgar(cls, facts: dict | None) -> "AnnualStatements":
+    def from_edgar(cls, facts: dict | None) -> AnnualStatements:
         """facts is the raw SEC XBRL companyfacts payload (see
         screener.fetch.fetch_edgar_facts) -- {facts: {"us-gaap": {TAG:
         {units: {...}}}}}. Only the fields SNP's historical_trends actually

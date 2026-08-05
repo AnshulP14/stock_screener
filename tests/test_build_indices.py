@@ -8,7 +8,6 @@ currency read from the company JSON's now-market-aware top-level field.
 import json
 
 from screener.index import build_indices
-from screener.store import CompanyStore
 
 
 def _write_company(companies_dir, symbol, market_cap, currency):
@@ -29,7 +28,7 @@ def test_summary_entry_has_single_market_cap_and_currency(tmp_path):
     indices_dir = tmp_path / "indices"
     _write_company(companies_dir, "AAPL", 3_000_000_000_000.0, "USD")
 
-    build_indices(store=CompanyStore(companies_dir), indices_dir=indices_dir)
+    build_indices(companies_dir=companies_dir, indices_dir=indices_dir)
 
     summary = json.loads((indices_dir / "screening_summary.json").read_text())
     entry = summary["companies"][0]
@@ -45,7 +44,7 @@ def test_nse_and_us_companies_keep_their_own_currency(tmp_path):
     _write_company(companies_dir, "RELIANCE", 1.5e13, "INR")
     _write_company(companies_dir, "AAPL", 3e12, "USD")
 
-    build_indices(store=CompanyStore(companies_dir), indices_dir=indices_dir)
+    build_indices(companies_dir=companies_dir, indices_dir=indices_dir)
 
     summary = json.loads((indices_dir / "screening_summary.json").read_text())
     by_symbol = {c["symbol"]: c for c in summary["companies"]}
@@ -75,7 +74,7 @@ def test_build_indices_writes_industry_comparison_back_onto_company_files(tmp_pa
     _write_company_with_pe(companies_dir, "A", "Software", pe=10.0)
     _write_company_with_pe(companies_dir, "B", "Software", pe=30.0)
 
-    build_indices(store=CompanyStore(companies_dir), indices_dir=indices_dir)
+    build_indices(companies_dir=companies_dir, indices_dir=indices_dir)
 
     a = json.loads((companies_dir / "A.json").read_text())
     assert a["industry_comparison"]["industry"] == "Software"
@@ -90,7 +89,7 @@ def test_build_indices_industry_comparison_populated_for_snp_too(tmp_path):
     indices_dir = tmp_path / "indices"
     _write_company_with_pe(companies_dir, "AAPL", "Consumer Electronics", pe=40.0)
 
-    build_indices(store=CompanyStore(companies_dir), indices_dir=indices_dir)
+    build_indices(companies_dir=companies_dir, indices_dir=indices_dir)
 
     aapl = json.loads((companies_dir / "AAPL.json").read_text())
     assert aapl["industry_comparison"] is not None

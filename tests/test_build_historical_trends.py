@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 from screener.transform import build_historical_trends
-from screener.trends import LeverageBand
+from screener.transform import LeverageBand
 
 FY_ENDS = [pd.Timestamp("2022-03-31"), pd.Timestamp("2023-03-31"), pd.Timestamp("2024-03-31")]
 

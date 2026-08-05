@@ -13,8 +13,7 @@ from pathlib import Path
 import fitz
 import pytest
 
-from screener import pdf_filings as pf
-
+from screener.filings import pdf_filings as pf
 
 BODY = 9
 TITLE = 16
