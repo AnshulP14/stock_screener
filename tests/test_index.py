@@ -86,7 +86,7 @@ def test_build_indices_writes_summary_stats_and_company_comparison(tmp_path):
     assert "market_cap_inr" not in aapl and "market_cap_usd" not in aapl
 
     stored = load_company(companies_dir, "AAPL")
-    assert stored["industry_comparison"]["peer_count"] == 2
+    assert stored["industry_comparison"]["peer_count"] == 1
     assert stored["industry_comparison"]["metrics"]["trailing_pe"]["value"] == 20.0
 
 

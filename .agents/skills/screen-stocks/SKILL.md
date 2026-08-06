@@ -1,129 +1,111 @@
 ---
 name: screen-stocks
-description: Screen and analyze NSE500 / S&P500 stocks using the local data set — SQL reference, strategy recipes (value/growth/quality/GARP), sector caveats, and data-schema notes. Use for any stock screening, ranking, comparison, or company-profile question.
+description: Screen and analyze NSE500 / S&P500 stocks using the local data set — SQL recipes, historical-series drill-downs, industry percentiles, and industry-aware metric interpretation.
 ---
 
 # Screening stocks
 
-All structured queries go through SQL against `data/screener.db` (DuckDB).
-For deep drill-downs beyond the curated trend series (full quarterly history, any of
-~500 GAAP tags), see `data/raw/snp/edgar_cache/{SYMBOL}.json` — extract with jq/python,
-never read one of these files whole (they run 4MB+ each).
-
-## Query idioms — batch, don't loop
-
-One query replaces several tool calls: use `WHERE symbol IN (...)`, joins, and
-`GROUP BY` to answer in one shot instead of looping per-symbol calls. Run every
-query through `scripts/query.py`:
+Query `data/screener.db` through `scripts/query.py`. Check `data/manifest.json`
+before treating results as current, then run `DESCRIBE nse` or `DESCRIBE snp` for
+the live flat schema and one-line metric definitions.
 
 ```bash
+uv run python scripts/query.py "DESCRIBE nse"
 uv run python scripts/query.py "SELECT * FROM nse LIMIT 5"
-uv run python scripts/query.py --csv "SELECT symbol, sector, trailing_pe FROM nse"
-uv run python scripts/query.py --market snp "SELECT * FROM snp WHERE pe_forward < 20"
+uv run python scripts/query.py --csv "SELECT symbol, trailing_pe, roce FROM snp"
 ```
 
-Show column names: `uv run python scripts/query.py "DESCRIBE nse"`
+Batch symbols in one query with `IN`, joins, or grouping. NSE and S&P are separate
+markets: compare percentiles only within their own table and compare absolute currency
+values only when `currency` matches.
 
-**Multi-symbol comparison in one query:**
-```sql
-SELECT symbol, trailing_pe, roe, profit_margin
-FROM nse WHERE symbol IN ('RELIANCE', 'TCS', 'BHEL');
-```
+## Query surfaces
 
-**Sector sweep, ranked:**
-```sql
-SELECT symbol, company_name, roe, profit_margin
-FROM nse WHERE sector = 'Healthcare' ORDER BY roe DESC LIMIT 10;
-```
-
-**Filter + rank + limit (one-shot shortlist):**
-```sql
-SELECT symbol, trailing_pe, roe, profit_margin
-FROM nse
-WHERE trailing_pe <= 15 AND roe >= 0.15 AND profit_margin >= 0.10
-ORDER BY roe DESC LIMIT 5;
-```
-
-**Deep single-company drill-down** (nested table, dot-notation into structs,
-`[-1]` for latest in a list):
-```sql
-SELECT symbol,
-       current_snapshot.profitability.return_on_equity,
-       shareholding.promoter[-1] AS latest_promoter_pct
-FROM nse_companies WHERE symbol = 'RELIANCE';
-```
-
-**Aggregation** (harder to express any other way):
-```sql
-SELECT sector, count(*) AS n, round(median(roe), 3) AS med_roe
-FROM nse GROUP BY sector ORDER BY med_roe DESC;
-```
-
-More examples, full column shapes, units, and NSE↔S&P schema deltas: `data/SCHEMA.md`
-(run `DESCRIBE {table}` for the live column list — don't trust a written one, it drifts).
-
-## Nested table query patterns
-
-The nested tables (`nse_companies`, `snp_companies`) use DuckDB **structs** and
-**arrays** — dot-notation into structs, `[-1]` for the latest entry in an array
-(see the drill-down example above). Two patterns worth knowing beyond that:
-
-`sector` in nested tables is JSON-encoded — use
-`json_extract_path_text(sector, '')` to filter by sector name (the flat `nse`/`snp`
-tables have a plain-string `sector`, no extraction needed).
-
-**Top institutional holders** (array of structs — needs `UNNEST`):
-```sql
-SELECT symbol, h.holder, h.pct_out
-FROM snp_companies, UNNEST(institutional_ownership.top_holders) AS t(h)
-WHERE symbol = 'AAPL' ORDER BY h.pct_out DESC LIMIT 5;
-```
-
-**Peer-checked relative value** (nested `industry_comparison`, not the flat
-`*_percentile` columns — gives `peer_count` alongside the comparison, so a thin
-industry doesn't get silently trusted):
-```sql
-SELECT symbol,
-       industry_comparison.peer_count,
-       industry_comparison.metrics.trailing_pe.percentile AS pe_pctile,
-       industry_comparison.metrics.trailing_pe.vs_median AS pe_vs_median
-FROM snp_companies WHERE symbol = 'AAPL';
-```
-
-## Tables
-
-| Table | Shape |
+| Table | Use |
 |---|---|
-| `nse`, `snp` | Flat, one row per company — fast simple screens |
-| `nse_companies`, `snp_companies` | Nested, full profile — historical trends, shareholding, credit ratings |
-| `nse_industry_stats`, `snp_industry_stats` | One row per industry — percentile bands |
+| `nse`, `snp` | Shared flat layout for screening and ranking |
+| `nse_companies`, `snp_companies` | Nested snapshots, aligned annual series, ownership, ratings, and peer detail |
+| `nse_industry_stats`, `snp_industry_stats` | Per-industry metric distributions |
 
-## Units
+Flat annual metrics always use `fundamentals_fy`; a missing value remains null. Flat
+three-year signals require exact fiscal-year spacing. `industry_peer_count` excludes the
+subject company. A `*_percentile` is present only with at least five valid same-industry
+peers and means the percentage of those peers with a lower value. It is position, not a
+goodness score: low valuation percentiles are usually attractive, while high quality
+percentiles are usually attractive.
 
-Ratios/margins are decimals (`roe = 0.15` → 15%); shareholding percentages are whole
-numbers (`promoter_latest = 52.3` → 52.3%) — the strategy recipes below assume this.
-Full unit/market-difference reference: `data/SCHEMA.md`.
+Ratios and margins are decimals (`0.15` = 15%). Percentiles are on a 0–100 scale.
+Market cap is in the row's `currency`.
 
-## Strategy recipes
+## Screening recipes
 
-- **VALUE**: `trailing_pe <= 15 AND price_to_book <= 2 AND roe >= 0.12`
-- **GROWTH**: `revenue_cagr_3yr >= 0.15 AND eps_cagr_3yr >= 0.15 AND profit_margin >= 0.10`
-- **QUALITY**: `roe >= 0.18 AND profit_margin >= 0.12 AND debt_to_equity <= 0.5`
-- **GARP**: `trailing_pe <= 25 AND revenue_cagr_3yr >= 0.15 AND eps_cagr_3yr >= 0.15`
-- **RELATIVE VALUE**: `pe_percentile <= 35 AND margin_percentile >= 60`
-  (cheap vs industry peers but higher quality — percentile columns compare within
-  industry, so they work across sectors where absolute P/E cutoffs don't)
+```sql
+-- Value with operating quality
+SELECT symbol, trailing_pe, enterprise_to_ebitda, operating_margin, roce
+FROM nse
+WHERE trailing_pe > 0 AND pe_percentile <= 35
+  AND operating_margin_percentile >= 60
+ORDER BY pe_percentile LIMIT 20;
 
-## Interpretation caveats
+-- Growth: exact three-year endpoints
+SELECT symbol, revenue_cagr_3yr, eps_cagr_3yr, operating_margin_change_3yr
+FROM snp
+WHERE revenue_cagr_3yr >= 0.12 AND eps_cagr_3yr >= 0.12
+ORDER BY revenue_cagr_3yr_percentile DESC LIMIT 20;
 
-- **Banks/financials**: P/B matters more than P/E; D/E is structurally high and mostly
-  meaningless — don't filter Financial Services on `debt_to_equity`.
-- **Capital-intensive sectors** (Industrials, Utilities, Real Estate, Basic Materials,
-  Energy): check D/E and P/B alongside P/E.
-- Very low P/E often signals cyclical peak earnings or a declining business, not a bargain.
-- NSE shareholding signals: rising promoter + rising FII holdings are generally positive;
-  falling promoter holding warrants a news check (pledging, stake sales).
+-- Capital efficiency and cash quality
+SELECT symbol, roce, roce_avg_3yr, fcf_yield, fcf_positive_years_3yr
+FROM nse
+WHERE roce >= 0.15 AND roce_avg_3yr >= 0.15
+  AND fcf_positive_years_3yr = 3
+ORDER BY roce_percentile DESC LIMIT 20;
 
-For anything price-sensitive or news-dependent (recent results, management changes,
-regulatory actions), supplement local data with a web research. Local data is a snapshot — check `data/manifest.json` (per-market
-`generated_at` + enrichment coverage) and flag staleness in your answer.
+-- Bank health in the same shared view
+SELECT symbol, price_to_book, roa, nonperforming_loans_ratio, cet1_ratio
+FROM nse
+WHERE nonperforming_loans_ratio IS NOT NULL
+ORDER BY nonperforming_loans_ratio, cet1_ratio DESC;
+
+-- Drawdown context
+SELECT symbol, drawdown_52w, revenue_cagr_3yr, roe
+FROM snp
+WHERE drawdown_52w <= -0.20
+ORDER BY drawdown_52w;
+```
+
+## Historical-series drill-down
+
+Every list under `historical_trends` aligns positionally with `fiscal_years`; nulls keep
+their place. `[-1]` is therefore the latest fiscal year, not the latest non-null value.
+
+```sql
+SELECT symbol,
+       historical_trends.fiscal_years[-1] AS fiscal_year,
+       historical_trends.revenue[-1] AS revenue,
+       historical_trends.operating_margin[-1] AS operating_margin,
+       historical_trends.roce[-1] AS roce,
+       historical_trends.free_cash_flow[-1] AS free_cash_flow
+FROM nse_companies
+WHERE symbol IN ('RELIANCE', 'TCS');
+```
+
+For peer context, use `industry_comparison.metrics.<metric>`: it carries the subject
+value, peer median, relative median gap, percentile, and metric-specific valid peer
+count. Ownership, NSE shareholding, and credit ratings remain nested profile details.
+
+Use `data/raw/` only when curated tables lack the requested detail. Extract the smallest
+needed subset; annual reports use the `analyse-statements` skill.
+
+## Industry interpretation
+
+- Banks: emphasize price/book, ROA, nonperforming loans, and CET1. Generic ROCE, FCF
+  yield, and net-debt/EBITDA may be null or economically unhelpful.
+- Capital-intensive businesses: emphasize ROCE, its three-year average, FCF yield,
+  capex history, and net-debt/EBITDA.
+- Asset-light businesses: emphasize operating margin, ROE/ROA, growth, FCF conversion,
+  and share-count change.
+- REITs and other specialized structures require their own accounting context; use the
+  flat view for discovery and the nested profile or filings for the decision.
+
+For current news, prices, management changes, or regulatory actions, supplement the
+local snapshot with web research.
