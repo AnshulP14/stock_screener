@@ -1,6 +1,7 @@
 """Rebuild and query data/screener.db."""
 
 import json
+import re
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ import pandas as pd
 from .config import BUILD_DB_DB_PATH
 from .index import update_manifest
 from .market import NSE, SNP, MarketConfig
+from .summary import COLUMN_DESCRIPTIONS
 
 # ── DuckDB query ────────────────────────────────────────────────────
 
@@ -25,6 +27,8 @@ def query(sql: str, csv: bool = False, market: str | None = None) -> None:
 
     try:
         result = conn.execute(sql).fetchdf()
+        if re.fullmatch(r"describe(?: table)? (?:nse|snp);?", sql.strip(), re.IGNORECASE):
+            result["description"] = result["column_name"].map(COLUMN_DESCRIPTIONS).fillna("")
         if csv:
             result.to_csv(sys.stdout, index=False)
         else:

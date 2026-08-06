@@ -60,7 +60,7 @@ def test_industry_stats_groups_separately_by_industry():
 def test_summary_row_has_core_fields():
     companies = [_company("A", "Software", pe=20.0, margin=0.1, cagr=0.15)]
     stats = compute_industry_stats(companies)
-    row = compute_summary_row(companies[0], stats)
+    row = compute_summary_row(companies[0], stats, market="snp")
     assert row["symbol"] == "A"
     assert row["industry"] == "Software"
     assert row["trailing_pe"] == 20.0
@@ -73,14 +73,14 @@ def test_summary_row_percentile_present_with_enough_peers():
         _company("B", "Software", pe=30.0, margin=0.2),
     ]
     stats = compute_industry_stats(companies)
-    row = compute_summary_row(companies[0], stats)
+    row = compute_summary_row(companies[0], stats, market="snp")
     assert row["pe_percentile"] is not None
 
 
 def test_summary_row_percentile_none_with_a_single_peer():
     companies = [_company("A", "Software", pe=10.0, margin=0.1)]
     stats = compute_industry_stats(companies)
-    row = compute_summary_row(companies[0], stats)
+    row = compute_summary_row(companies[0], stats, market="snp")
     assert row["pe_percentile"] is None
 
 
@@ -88,19 +88,19 @@ def test_summary_row_carries_cik_and_institutional_ownership_pct_fields():
     io = {"pct_insider": 1.6, "pct_institutional": 66.5, "top_holders": []}
     companies = [_company("AAPL", "Tech", pe=20.0, margin=0.1, cik=320193, institutional_ownership=io)]
     stats = compute_industry_stats(companies)
-    row = compute_summary_row(companies[0], stats)
+    row = compute_summary_row(companies[0], stats, market="snp")
     assert row["cik"] == 320193
     assert row["pct_insider"] == 1.6
     assert row["pct_institutional"] == 66.5
 
 
-def test_summary_row_cik_and_ownership_fields_default_to_none():
+def test_nse_summary_row_omits_snp_only_fields():
     companies = [_company("RELIANCE", "Energy", pe=20.0, margin=0.1)]
     stats = compute_industry_stats(companies)
-    row = compute_summary_row(companies[0], stats)
-    assert row["cik"] is None
-    assert row["pct_insider"] is None
-    assert row["pct_institutional"] is None
+    row = compute_summary_row(companies[0], stats, market="nse")
+    assert "cik" not in row
+    assert "pct_insider" not in row
+    assert "pct_institutional" not in row
 
 
 def test_summary_row_shareholding_latest_and_trend():
@@ -110,7 +110,7 @@ def test_summary_row_shareholding_latest_and_trend():
         "trends": {"promoter": "increasing"},
     }
     stats = compute_industry_stats([company])
-    row = compute_summary_row(company, stats)
+    row = compute_summary_row(company, stats, market="nse")
     assert row["promoter_latest"] == 52.3
     assert row["promoter_trend"] == "increasing"
 
@@ -118,7 +118,7 @@ def test_summary_row_shareholding_latest_and_trend():
 def test_summary_row_handles_missing_shareholding_key():
     company = _company("A", "Software", pe=20.0, margin=0.1)
     stats = compute_industry_stats([company])
-    row = compute_summary_row(company, stats)
+    row = compute_summary_row(company, stats, market="nse")
     assert row["promoter_latest"] is None
     assert row["promoter_trend"] is None
 

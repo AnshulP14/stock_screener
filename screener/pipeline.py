@@ -84,7 +84,7 @@ def _write_manifest(market: MarketConfig, companies_dir: Path) -> None:
 
 
 def _finish(market: MarketConfig, companies_dir: Path, start: float, *, skipped: int = 0) -> dict:
-    build_indices(companies_dir=companies_dir, indices_dir=market.indices_dir)
+    build_indices(companies_dir=companies_dir, indices_dir=market.indices_dir, market=market.id)
     rebuild_db(market)
     elapsed = time.time() - start
     _write_manifest(market, companies_dir)
@@ -336,7 +336,7 @@ def _fetch_and_save(
     # Stage B is done (consumer joined above); rebuild indices/DB now rather
     # than waiting on Stage C's report downloads, which don't feed either one.
     print(f"\n[{market.label}] Rebuilding indices...", flush=True)
-    build_indices(companies_dir=companies_dir, indices_dir=indices_dir)
+    build_indices(companies_dir=companies_dir, indices_dir=indices_dir, market=market.id)
     print(f"[{market.label}] Rebuilding screener.db...", flush=True)
     rebuild_db(market)
 

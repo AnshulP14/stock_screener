@@ -5,6 +5,49 @@ from typing import Any
 
 from .statements import safe_float as _safe_float
 
+# One-line definitions for the flat query surface.  `scripts/query.py
+# "DESCRIBE nse"` appends these to DuckDB's live schema output.
+COLUMN_DESCRIPTIONS = {
+    "symbol": "Exchange ticker symbol.",
+    "company_name": "Company name.",
+    "sector": "Broad business sector.",
+    "industry": "Industry used for peer comparisons.",
+    "currency": "Currency for absolute-value fields.",
+    "cik": "SEC Central Index Key (S&P only).",
+    "market_cap": "Current equity market value in the row currency.",
+    "trailing_pe": "Price divided by trailing 12-month earnings per share.",
+    "forward_pe": "Price divided by estimated next-12-month earnings per share.",
+    "price_to_book": "Price divided by book value per share.",
+    "roe": "Net income divided by shareholder equity.",
+    "profit_margin": "Net income as a share of revenue.",
+    "debt_to_equity": "Total debt divided by shareholder equity.",
+    "beta": "Stock volatility relative to its market benchmark.",
+    "revenue_cagr_3yr": "Annualized revenue growth over up to three years.",
+    "net_income_cagr_3yr": "Annualized net-income growth over up to three years.",
+    "eps_cagr_3yr": "Annualized diluted-EPS growth over up to three years.",
+    "pct_insider": "Insider-held shares as a percentage of shares outstanding.",
+    "pct_institutional": "Institution-held shares as a percentage of shares outstanding.",
+    "pe_percentile": "Trailing P/E percentile within industry; lower is cheaper.",
+    "forward_pe_percentile": "Forward P/E percentile within industry; lower is cheaper.",
+    "price_to_book_percentile": "Price-to-book percentile within industry; lower is cheaper.",
+    "margin_percentile": "Net-margin percentile within industry; higher is better.",
+    "operating_margin_percentile": "Operating-margin percentile within industry; higher is better.",
+    "roe_percentile": "ROE percentile within industry; higher is better.",
+    "roa_percentile": "ROA percentile within industry; higher is better.",
+    "debt_to_equity_percentile": "Debt-to-equity percentile within industry; lower is usually safer.",
+    "ev_to_ebitda_percentile": "EV/EBITDA percentile within industry; lower is cheaper.",
+    "revenue_cagr_3yr_percentile": "Revenue-growth percentile within industry; higher is faster growth.",
+    "eps_cagr_3yr_percentile": "EPS-growth percentile within industry; higher is faster growth.",
+    "promoter_latest": "Latest promoter shareholding percentage (NSE only).",
+    "promoter_trend": "Direction of recent promoter shareholding (NSE only).",
+    "fii_latest": "Latest foreign-institution shareholding percentage (NSE only).",
+    "fii_trend": "Direction of recent foreign-institution shareholding (NSE only).",
+    "dii_latest": "Latest domestic-institution shareholding percentage (NSE only).",
+    "dii_trend": "Direction of recent domestic-institution shareholding (NSE only).",
+    "public_latest": "Latest public shareholding percentage (NSE only).",
+    "public_trend": "Direction of recent public shareholding (NSE only).",
+}
+
 
 def _percentile(value, sorted_values):
     if value is None or not sorted_values:
@@ -47,10 +90,8 @@ TEXT_COLUMNS: list[tuple[str, Callable[[dict], Any]]] = [
     ("sector", lambda c: c.get("sector", "")),
     ("industry", lambda c: c.get("industry", "Unknown")),
     ("currency", lambda c: c.get("currency")),
-    ("cik", lambda c: c.get("cik")),
 ]
 
-# Market-specific numeric fields stay present as nulls in the other market.
 NUMERIC_COLUMNS: list[tuple[str, Callable[[dict], Any]]] = [
     ("market_cap", _snapshot("size", "market_cap")),
     ("trailing_pe", _snapshot("price_metrics", "trailing_pe")),
@@ -63,6 +104,10 @@ NUMERIC_COLUMNS: list[tuple[str, Callable[[dict], Any]]] = [
     ("revenue_cagr_3yr", _trend("revenue", "cagr_3yr")),
     ("net_income_cagr_3yr", _trend("net_income", "cagr_3yr")),
     ("eps_cagr_3yr", _trend("eps", "cagr_3yr")),
+]
+
+_SNP_COLUMNS = [
+    ("cik", lambda c: c.get("cik")),
     ("pct_insider", _ownership("pct_insider")),
     ("pct_institutional", _ownership("pct_institutional")),
 ]
@@ -125,7 +170,7 @@ def compute_industry_stats(companies: list[dict]) -> dict:
     return industry_stats
 
 
-def compute_summary_row(company: dict, industry_stats: dict) -> dict:
+def compute_summary_row(company: dict, industry_stats: dict, *, market: str) -> dict:
     """One flat screening_summary row -- TEXT_COLUMNS/NUMERIC_COLUMNS plus
     industry percentiles and shareholding latest/trend."""
     ind = company.get("industry", "Unknown")
@@ -133,21 +178,21 @@ def compute_summary_row(company: dict, industry_stats: dict) -> dict:
 
     entry = {key: extractor(company) for key, extractor in TEXT_COLUMNS}
     entry.update({key: _safe_float(extractor(company)) for key, extractor in NUMERIC_COLUMNS})
+    if market == "snp":
+        entry.update({key: _safe_float(extractor(company)) for key, extractor in _SNP_COLUMNS})
 
     for group, field, key in METRICS_FOR_PERCENTILE:
         val = _metric_value(company, group, field)
         stat = ind_stats.get(key)
         entry[f"{key}_percentile"] = _percentile(val, stat.get("_values")) if stat else None
 
-    # Shareholding latest/trend (always present, null if missing). S&P profiles
-    # always carry an explicit `"shareholding": null` key, so `.get(k, {})`
-    # alone won't fall back -- `or {}` is needed to catch the None value too.
-    sh = company.get("shareholding") or {}
-    sh_trends = sh.get("trends") or {}
-    for holder in _SHAREHOLDING_HOLDERS:
-        vals = sh.get(holder, [])
-        entry[f"{holder}_latest"] = vals[-1] if vals else None
-        entry[f"{holder}_trend"] = sh_trends.get(holder)
+    if market == "nse":
+        sh = company.get("shareholding") or {}
+        sh_trends = sh.get("trends") or {}
+        for holder in _SHAREHOLDING_HOLDERS:
+            vals = sh.get(holder, [])
+            entry[f"{holder}_latest"] = vals[-1] if vals else None
+            entry[f"{holder}_trend"] = sh_trends.get(holder)
 
     return entry
 

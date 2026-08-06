@@ -77,6 +77,7 @@ def build_indices(
     *,
     companies_dir: Path,
     indices_dir: Path = INDICES_DIR,
+    market: str,
 ) -> dict | None:
     """Build summary and industry indices, then update company comparisons."""
     print("  Building indices...")
@@ -88,7 +89,7 @@ def build_indices(
 
     all_companies = [c for _, c in loaded]
     industry_stats = compute_industry_stats(all_companies)
-    summary = [compute_summary_row(c, industry_stats) for c in all_companies]
+    summary = [compute_summary_row(c, industry_stats, market=market) for c in all_companies]
 
     # ── Write screening_summary ──
     summary_json = {

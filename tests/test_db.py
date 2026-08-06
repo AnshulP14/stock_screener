@@ -32,6 +32,20 @@ def test_drop_market_tables_is_idempotent_when_absent(tmp_path, monkeypatch):
     db_mod.drop_market_tables("snp")  # must not raise
 
 
+def test_query_describe_adds_flat_column_descriptions(tmp_path, monkeypatch, capsys):
+    db_path = tmp_path / "test.db"
+    monkeypatch.setattr(db_mod, "BUILD_DB_DB_PATH", db_path)
+    con = duckdb.connect(str(db_path))
+    con.execute("CREATE TABLE nse AS SELECT 1.0 AS trailing_pe")
+    con.close()
+
+    db_mod.query("DESCRIBE nse")
+
+    output = capsys.readouterr().out
+    assert "description" in output
+    assert "Price divided by trailing 12-month earnings per share." in output
+
+
 def test_rebuild_market_db_creates_the_complete_query_surface(tmp_path, monkeypatch):
     db_path = tmp_path / "screener.db"
     companies_dir = tmp_path / "companies"
@@ -72,3 +86,4 @@ def test_rebuild_market_db_creates_the_complete_query_surface(tmp_path, monkeypa
     assert result["tables"] == counts
     assert manifest_updates[0][0] == "snp"
     assert manifest_updates[0][2] == {"touch_generated_at": False}
+

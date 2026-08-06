@@ -76,7 +76,7 @@ def test_build_indices_writes_summary_stats_and_company_comparison(tmp_path):
     for symbol, market_cap, pe in (("AAPL", 3e12, 20.0), ("MSFT", 2e12, 30.0)):
         save_company(companies_dir, symbol, _company(symbol, market_cap, pe))
 
-    result = build_indices(companies_dir=companies_dir, indices_dir=indices_dir)
+    result = build_indices(companies_dir=companies_dir, indices_dir=indices_dir, market="snp")
 
     summary = json.loads((indices_dir / "screening_summary.json").read_text())
     aapl = next(company for company in summary["companies"] if company["symbol"] == "AAPL")
@@ -91,5 +91,5 @@ def test_build_indices_writes_summary_stats_and_company_comparison(tmp_path):
 
 
 def test_build_indices_with_no_companies_is_a_noop(tmp_path):
-    assert build_indices(companies_dir=tmp_path / "missing", indices_dir=tmp_path / "indices") is None
+    assert build_indices(companies_dir=tmp_path / "missing", indices_dir=tmp_path / "indices", market="snp") is None
     assert not (tmp_path / "indices").exists()
