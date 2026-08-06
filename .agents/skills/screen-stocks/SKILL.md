@@ -76,18 +76,22 @@ ORDER BY drawdown_52w;
 ## Historical-series drill-down
 
 Every list under `historical_trends` aligns positionally with `fiscal_years`; nulls keep
-their place. `[-1]` is therefore the latest fiscal year, not the latest non-null value.
+their place. For a historical drill-down, fetch the full year list and full metric arrays
+so direction, volatility, consistency, and missing observations remain visible.
 
 ```sql
 SELECT symbol,
-       historical_trends.fiscal_years[-1] AS fiscal_year,
-       historical_trends.revenue[-1] AS revenue,
-       historical_trends.operating_margin[-1] AS operating_margin,
-       historical_trends.roce[-1] AS roce,
-       historical_trends.free_cash_flow[-1] AS free_cash_flow
+       historical_trends.fiscal_years,
+       historical_trends.revenue,
+       historical_trends.operating_margin,
+       historical_trends.roce,
+       historical_trends.free_cash_flow
 FROM nse_companies
 WHERE symbol IN ('RELIANCE', 'TCS');
 ```
+
+Use `[-1]` only when the question explicitly asks for the latest fiscal-year value. It
+selects the last aligned entry, including null, rather than the latest non-null entry.
 
 For peer context, use `industry_comparison.metrics.<metric>`: it carries the subject
 value, peer median, relative median gap, percentile, and metric-specific valid peer

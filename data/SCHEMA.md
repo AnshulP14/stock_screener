@@ -24,7 +24,9 @@ NSE and S&P tables are separate. Industry statistics and percentiles never mix m
 
 Nested `historical_trends` is retained as the legacy storage key, but its contents are
 aligned historical series rather than trend labels. `fiscal_years` is ascending and every
-metric list has the same positional alignment. Use `[-1]` for the latest fiscal year.
+metric list has the same positional alignment. Historical drill-downs should select the
+full year list and full metric arrays. Use `[-1]` only for an explicitly latest-value query;
+it preserves a final null rather than backfilling an older observation.
 
 ## Units and formulas
 
@@ -68,9 +70,9 @@ WHERE pe_percentile <= 35 AND roce_percentile >= 60
 ORDER BY fcf_yield DESC;
 
 SELECT symbol,
-       historical_trends.fiscal_years[-1] AS fiscal_year,
-       historical_trends.revenue[-1] AS revenue,
-       historical_trends.roce[-1] AS roce
+       historical_trends.fiscal_years,
+       historical_trends.revenue,
+       historical_trends.roce
 FROM snp_companies
 WHERE symbol = 'AAPL';
 ```
