@@ -84,11 +84,10 @@ def test_yoy_and_cagr():
     assert cagr([-100, 121]) is None
 
 
-def test_historical_trends_use_ratio_margin_and_roe_values():
+def test_historical_trends_use_aligned_margin_and_average_balance_roe_values():
     trends = build_historical_trends(_data())
-    assert trends["debt_to_equity"]["trend"] == "high"
-    assert trends["operating_margin"]["values"] == pytest.approx([0.08, 0.09, 0.10])
-    assert trends["roe"]["avg_3yr"] == pytest.approx(0.20)
+    assert trends["operating_margin"] == pytest.approx([0.08, 0.09, 0.10])
+    assert trends["roe"] == [None, pytest.approx(0.20), pytest.approx(0.30)]
 
 
 def test_roe_aligns_income_and_equity_by_fiscal_year():
@@ -98,15 +97,11 @@ def test_roe_aligns_income_and_equity_by_fiscal_year():
         FY_ENDS[2]: {"Total Debt": 160.0, "Stockholders Equity": 200.0},
     })
 
-    assert build_historical_trends(data)["roe"]["values"] == [
-        None, pytest.approx(0.10), pytest.approx(0.15),
+    assert build_historical_trends(data)["roe"] == [
+        None, None, pytest.approx(0.15),
     ]
 
 
-@pytest.mark.parametrize(("debt", "phrase"), [
-    ((5.0, 40.0, 160.0), "high leverage"),
-    ((50.0, 20.0, 1.0), "debt-free"),
-])
-def test_leverage_insight_reaches_company_insights(debt, phrase):
-    insights = generate_insights(build_historical_trends(_data(debt=debt)))
-    assert any(phrase in insight.lower() for insight in insights)
+def test_generate_insights_accepts_aligned_series():
+    insights = generate_insights(build_historical_trends(_data()))
+    assert "Revenue CAGR: +0.0%" in insights

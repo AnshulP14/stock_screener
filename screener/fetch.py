@@ -2,8 +2,8 @@
 
 import io
 import os
-import threading
 import tempfile
+import threading
 from datetime import date
 from pathlib import Path
 from typing import Any

@@ -55,6 +55,12 @@ class AnnualLineItems:
     total_debt: float | None = None
     stockholders_equity: float | None = None
     operating_cash_flow: float | None = None
+    capex: float | None = None
+    total_assets: float | None = None
+    current_liabilities: float | None = None
+    cash_and_equivalents: float | None = None
+    diluted_shares: float | None = None
+    ebitda: float | None = None
 
 
 # (field name, source statement, yfinance row label) -- the only place these
@@ -68,6 +74,13 @@ _FIELD_SOURCES = [
     ("free_cash_flow", "cashflow", "Free Cash Flow"),
     ("total_debt", "balance", "Total Debt"),
     ("stockholders_equity", "balance", "Stockholders Equity"),
+    ("operating_cash_flow", "cashflow", "Operating Cash Flow"),
+    ("capex", "cashflow", "Capital Expenditure"),
+    ("total_assets", "balance", "Total Assets"),
+    ("current_liabilities", "balance", "Current Liabilities"),
+    ("cash_and_equivalents", "balance", "Cash Cash Equivalents And Short Term Investments"),
+    ("diluted_shares", "income", "Diluted Average Shares"),
+    ("ebitda", "income", "EBITDA"),
 ]
 
 # Candidate SEC tags are ordered so later aliases only fill missing years.
@@ -77,7 +90,7 @@ _EDGAR_FIELD_TAGS: dict[str, tuple[str, ...]] = {
         "Revenues",
         "SalesRevenueNet",
     ),
-    "net_income": ("NetIncomeLoss",),
+    "net_income": ("NetIncomeLoss", "ProfitLoss"),
     "diluted_eps": ("EarningsPerShareDiluted",),
     "gross_profit": ("GrossProfit",),
     "operating_income": ("OperatingIncomeLoss",),
@@ -85,7 +98,37 @@ _EDGAR_FIELD_TAGS: dict[str, tuple[str, ...]] = {
         "NetCashProvidedByUsedInOperatingActivities",
         "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations",
     ),
+    "capex": ("PaymentsToAcquirePropertyPlantAndEquipment",),
+    "total_assets": ("Assets",),
+    "current_liabilities": ("LiabilitiesCurrent",),
+    "cash_and_equivalents": (
+        "CashAndCashEquivalentsAtCarryingValue",
+        "CashCashEquivalentsAndShortTermInvestments",
+    ),
+    "stockholders_equity": (
+        "StockholdersEquity",
+        "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+    ),
+    "diluted_shares": ("WeightedAverageNumberOfDilutedSharesOutstanding",),
 }
+
+_EDGAR_DEBT_TAGS = {
+    "direct": ("LongTermDebt", "DebtAndFinanceLeaseObligations"),
+    "noncurrent": (
+        "LongTermDebtNoncurrent",
+        "LongTermDebtAndFinanceLeaseObligationsNoncurrent",
+    ),
+    "current": (
+        "LongTermDebtCurrent",
+        "LongTermDebtAndFinanceLeaseObligationsCurrent",
+        "ShortTermBorrowings",
+    ),
+}
+
+_EDGAR_DA_TAGS = (
+    "DepreciationDepletionAndAmortization",
+    "DepreciationDepletionAndAmortizationPropertyPlantAndEquipment",
+)
 
 
 def _edgar_annual_values(tag_facts: dict) -> dict[int, float]:
@@ -123,6 +166,14 @@ def _edgar_field_values(us_gaap: dict, field: str) -> dict[int, float]:
         if not tag_facts:
             continue
         for fy, val in _edgar_annual_values(tag_facts).items():
+            values.setdefault(fy, val)
+    return values
+
+
+def _edgar_tag_values(us_gaap: dict, tags: tuple[str, ...]) -> dict[int, float]:
+    values: dict[int, float] = {}
+    for tag in tags:
+        for fy, val in _edgar_annual_values(us_gaap.get(tag, {})).items():
             values.setdefault(fy, val)
     return values
 
@@ -171,9 +222,29 @@ class AnnualStatements:
         us_gaap = (facts or {}).get("facts", {}).get("us-gaap", {})
         per_field = {field: _edgar_field_values(us_gaap, field) for field in _EDGAR_FIELD_TAGS}
 
+        direct_debt = _edgar_tag_values(us_gaap, _EDGAR_DEBT_TAGS["direct"])
+        noncurrent_debt = _edgar_tag_values(us_gaap, _EDGAR_DEBT_TAGS["noncurrent"])
+        current_debt = _edgar_tag_values(us_gaap, _EDGAR_DEBT_TAGS["current"])
+        debt_years = set(direct_debt) | (set(noncurrent_debt) & set(current_debt))
+        per_field["total_debt"] = {
+            year: (
+                direct_debt[year]
+                if year in direct_debt
+                else noncurrent_debt[year] + current_debt[year]
+            )
+            for year in debt_years
+        }
+
+        depreciation = _edgar_tag_values(us_gaap, _EDGAR_DA_TAGS)
+        operating_income = per_field["operating_income"]
+        per_field["ebitda"] = {
+            year: operating_income[year] + depreciation[year]
+            for year in set(operating_income) & set(depreciation)
+        }
+
         years = sorted(set().union(*per_field.values()))
         by_year = {
-            year: AnnualLineItems(**{field: per_field[field].get(year) for field in _EDGAR_FIELD_TAGS})
+            year: AnnualLineItems(**{field: values.get(year) for field, values in per_field.items()})
             for year in years
         }
         return cls(by_year=by_year)

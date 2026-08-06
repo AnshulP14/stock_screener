@@ -19,6 +19,8 @@ def _isolate_external_state(tmp_path, monkeypatch):
     monkeypatch.setattr(markets_mod, "process_symbol_full", lambda *args, **kwargs: [])
     monkeypatch.setattr(markets_mod, "is_report_stale", lambda *args, **kwargs: False)
     monkeypatch.setattr(markets_mod, "screener_session", object)
+    monkeypatch.setattr(markets_mod, "parse_nse_bank_history", lambda symbol: {})
+    monkeypatch.setattr(markets_mod, "parse_ffiec_history", lambda rssd: {})
     monkeypatch.setattr("screener.runner.AdaptiveRateLimiter.acquire", lambda self: None)
 
 
@@ -228,7 +230,7 @@ def test_write_manifest_edgar_coverage_needs_real_years_not_just_a_resolved_cik(
     companies_dir = tmp_path / "companies"
     companies_dir.mkdir()
     (companies_dir / "AAA.json").write_text(json.dumps(
-        {"cik": 123, "historical_trends": {"years_available": [2023, 2024]}}
+        {"cik": 123, "historical_trends": {"fiscal_years": [2023, 2024]}}
     ))
     (companies_dir / "BBB.json").write_text(json.dumps(
         {"cik": 456, "historical_trends": {"years_available": []}}
@@ -344,6 +346,11 @@ def test_snp_bank_downloads_years_once_and_stores_reviewed_rssd(tmp_path, monkey
 
     monkeypatch.setattr(markets_mod, "download_ffiec_years", fake_ffiec)
     monkeypatch.setattr(markets_mod, "ffiec_rssd_ids", lambda path: {1039502, 1073757})
+    monkeypatch.setattr(
+        markets_mod,
+        "parse_ffiec_history",
+        lambda rssd: {2024: {"nonperforming_loans_ratio": rssd / 1e9, "cet1_ratio": 0.15}},
+    )
     market = _test_market(
         tmp_path, id="snp", fetch_universe=lambda: (["JPM", "BAC"], None), uses_edgar=True,
     )
@@ -357,8 +364,30 @@ def test_snp_bank_downloads_years_once_and_stores_reviewed_rssd(tmp_path, monkey
     assert calls[0][1] == 9 and len(calls[0][0]) == 5
     company = json.loads((tmp_path / "companies" / "JPM.json").read_text())
     assert company["rssd_id"] == 1039502
+    assert company["historical_trends"]["cet1_ratio"] == [0.15]
     company = json.loads((tmp_path / "companies" / "BAC.json").read_text())
     assert company["rssd_id"] == 1073757
+
+
+def test_pipeline_caches_prices_and_stores_drawdown_in_company_profile(tmp_path, monkeypatch):
+    prices = pd.DataFrame(
+        {"Adj Close": [100.0, 120.0, 90.0, 110.0]},
+        index=pd.to_datetime(["2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01"]),
+    )
+    monkeypatch.setattr(markets_mod, "RAW_DIR", tmp_path / "raw")
+    monkeypatch.setattr(
+        markets_mod, "fetch_ticker_data",
+        lambda symbol, **kw: {
+            "symbol": symbol, "info": {"industry": "Software - Infrastructure"},
+            "price_history": prices, "fetch_time": "2026-04-01", "error": None,
+        },
+    )
+    market = _test_market(tmp_path, id="nse", fetch_universe=lambda: (["AAA"], None))
+
+    run_pipeline(market, mode="full-sync", fetch_reports=False)
+
+    company = json.loads((tmp_path / "companies" / "AAA.json").read_text())
+    assert company["current_snapshot"]["risk"]["drawdown_52w"] == pytest.approx(-0.25)
 
 
 def test_final_summary_waits_for_and_reports_annual_report_result(

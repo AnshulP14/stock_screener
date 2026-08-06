@@ -2,6 +2,7 @@
 
 from datetime import date
 from itertools import pairwise
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -11,7 +12,9 @@ from .statements import AnnualStatements, safe_float
 
 # ── Extractors ──────────────────────────────────────────────────────
 
-def build_current_snapshot(data: dict[str, Any], market: MarketConfig = NSE) -> dict:
+def build_current_snapshot(
+    data: dict[str, Any], market: MarketConfig = NSE, *, drawdown: float | None = None,
+) -> dict:
     """Build a market-aware snapshot from Yahoo info."""
     info = data.get("info", {})
 
@@ -62,7 +65,26 @@ def build_current_snapshot(data: dict[str, Any], market: MarketConfig = NSE) -> 
             "book_value": safe_float(info.get("bookValue")),
             "revenue_per_share": safe_float(info.get("revenuePerShare")),
         },
+        "risk": {"drawdown_52w": safe_float(drawdown)},
     }
+
+
+def drawdown_52w(path: Path) -> float | None:
+    """Calculate peak-to-trough drawdown from a cached adjusted-price CSV."""
+    try:
+        prices = pd.read_csv(path, usecols=["date", "adjusted_close"])
+    except (OSError, ValueError):
+        return None
+    prices["date"] = pd.to_datetime(prices["date"], errors="coerce")
+    prices["adjusted_close"] = pd.to_numeric(prices["adjusted_close"], errors="coerce")
+    prices = prices.dropna().query("adjusted_close > 0").sort_values("date")
+    if len(prices) < 2:
+        return None
+    prices = prices[prices["date"] >= prices["date"].iloc[-1] - pd.Timedelta(weeks=52)]
+    if len(prices) < 2:
+        return None
+    value = (prices["adjusted_close"] / prices["adjusted_close"].cummax() - 1).min()
+    return safe_float(value)
 
 
 # ── Trend computation ───────────────────────────────────────────────
@@ -77,77 +99,100 @@ def _compute_operating_margin(rev, op):
     return m
 
 
-def build_trends(statements: AnnualStatements, series_spec: tuple, *, source: str) -> dict[str, Any]:
-    """Build historical_trends dict from statements + series spec
-    (MarketConfig.trend_series). Also derives composite metrics
-    (operating_margin, roe, debt_to_equity) when their inputs are present."""
-    years = statements.years
+def build_trends(
+    statements: AnnualStatements,
+    series_spec: tuple,
+    *,
+    source: str,
+    regulatory: dict[int, dict[str, float | None]] | None = None,
+) -> dict[str, Any]:
+    """Build positionally aligned annual statement and derived series."""
+    del series_spec  # Phase 3B has one shared profile layout for both markets.
+    regulatory = regulatory or {}
+    years = sorted(set(statements.years) | set(regulatory))
     if not years:
-        return {"source": source, "years_available": [], "error": "no_data"}
+        return {"source": source, "fiscal_years": [], "error": "no_data"}
 
-    out: dict[str, Any] = {"source": source, "years_available": years}
+    items = {
+        year: statements.by_year.get(year, None)
+        for year in years
+    }
+    base_fields = (
+        "revenue", "gross_profit", "operating_income", "net_income", "diluted_eps",
+        "operating_cash_flow", "total_assets", "current_liabilities",
+        "cash_and_equivalents", "total_debt", "stockholders_equity", "diluted_shares",
+        "ebitda",
+    )
+    out: dict[str, Any] = {"source": source, "fiscal_years": years}
+    for field in base_fields:
+        out[field] = [getattr(items[year], field) if items[year] else None for year in years]
 
-    attr_map = {key: attr for key, attr in series_spec}
+    raw_capex = [items[year].capex if items[year] else None for year in years]
+    out["capex"] = [abs(value) if value is not None else None for value in raw_capex]
+    for field in (
+        "loans", "deposits", "nonperforming_loans_ratio", "net_npa_ratio", "cet1_ratio",
+    ):
+        out[field] = [safe_float(regulatory.get(year, {}).get(field)) for year in years]
 
-    for out_key, attr_name in series_spec:
-        vals = getattr(statements, attr_name)
-        clean = [v for v in vals if safe_float(v)]
-
-        entry: dict[str, Any] = {"values": vals}
-
-        if out_key in ("revenue", "net_income", "eps"):
-            entry["cagr_3yr"] = cagr(clean)
-            entry["trend"] = classify_growth(vals)
-
-        if out_key == "revenue":
-            entry["yoy_growth"] = yoy(vals)
-
-        if out_key in ("gross_profit", "free_cash_flow", "operating_cash_flow"):
-            entry["trend"] = classify_growth(vals)
-            entry["positive_years"] = sum(1 for v in vals if safe_float(v) and v > 0)
-
-        out[out_key] = entry
-
-    # ── Composite: operating margin (needs revenue + operating_income) ──
-    if "revenue" in attr_map and "operating_income" in attr_map:
-        rev_vals = getattr(statements, attr_map["revenue"])
-        op_vals = getattr(statements, attr_map["operating_income"])
-        om = _compute_operating_margin(rev_vals, op_vals)
-        out["operating_margin"] = {
-            "values": om,
-            "direction": classify_margin_direction(om),
-        }
-
-    # ── Composite: ROE (needs net_income + stockholders_equity) ──
-    if "net_income" in attr_map and "stockholders_equity" in attr_map:
-        ni_vals = getattr(statements, attr_map["net_income"])
-        eq_vals = getattr(statements, attr_map["stockholders_equity"])
-        roe_values = [
-            safe_float(ni_v / eq) if safe_float(ni_v) is not None and eq else None
-            for ni_v, eq in zip(ni_vals, eq_vals)
+    def ratios(numerators, denominators, *, positive_denominator=False):
+        return [
+            numerator / denominator
+            if (
+                numerator is not None and denominator is not None and denominator != 0
+                and (not positive_denominator or denominator > 0)
+            )
+            else None
+            for numerator, denominator in zip(numerators, denominators)
         ]
-        out["roe"] = {
-            "values": roe_values,
-            "avg_3yr": average_roe(roe_values),
-        }
 
-    # ── Composite: debt_to_equity (needs total_debt + stockholders_equity) ──
-    if "total_debt" in attr_map and "stockholders_equity" in attr_map:
-        debt_vals = getattr(statements, attr_map["total_debt"])
-        eq_vals = getattr(statements, attr_map["stockholders_equity"])
-        de_values = [
-            safe_float(d / e) if safe_float(d) is not None and e else None
-            for d, e in zip(debt_vals, eq_vals)
-        ]
-        out["debt_to_equity"] = {
-            "values": de_values,
-            "trend": classify_leverage(de_values),
-        }
+    out["free_cash_flow"] = [
+        cash_flow - capex if cash_flow is not None and capex is not None else None
+        for cash_flow, capex in zip(out["operating_cash_flow"], out["capex"])
+    ]
+    out["gross_margin"] = ratios(out["gross_profit"], out["revenue"])
+    out["operating_margin"] = ratios(out["operating_income"], out["revenue"])
+    out["fcf_margin"] = ratios(out["free_cash_flow"], out["revenue"])
+    out["cfo_to_net_income"] = ratios(out["operating_cash_flow"], out["net_income"])
+    out["capex_intensity"] = ratios(out["capex"], out["revenue"])
+    out["net_debt"] = [
+        debt - cash if debt is not None and cash is not None else None
+        for debt, cash in zip(out["total_debt"], out["cash_and_equivalents"])
+    ]
+    out["net_debt_to_ebitda"] = ratios(
+        out["net_debt"], out["ebitda"], positive_denominator=True,
+    )
 
+    capital_employed = [
+        assets - liabilities if assets is not None and liabilities is not None else None
+        for assets, liabilities in zip(out["total_assets"], out["current_liabilities"])
+    ]
+
+    def average_return(numerators, balances):
+        values = [None]
+        for index in range(1, len(years)):
+            previous, current = balances[index - 1], balances[index]
+            average = (
+                (previous + current) / 2
+                if years[index] == years[index - 1] + 1
+                and previous is not None and current is not None
+                else None
+            )
+            numerator = numerators[index]
+            values.append(numerator / average if numerator is not None and average and average > 0 else None)
+        return values
+
+    out["roe"] = average_return(out["net_income"], out["stockholders_equity"])
+    out["roa"] = average_return(out["net_income"], out["total_assets"])
+    out["roce"] = average_return(out["operating_income"], capital_employed)
     return out
 
 
-def build_historical_trends(data: dict[str, Any], market: MarketConfig = NSE) -> dict[str, Any]:
+def build_historical_trends(
+    data: dict[str, Any],
+    market: MarketConfig = NSE,
+    *,
+    regulatory: dict[int, dict[str, float | None]] | None = None,
+) -> dict[str, Any]:
     """Compute historical trends from yfinance annual data (NSE only)."""
     statements = AnnualStatements.from_yfinance(
         data.get("annual_income", pd.DataFrame()),
@@ -155,16 +200,25 @@ def build_historical_trends(data: dict[str, Any], market: MarketConfig = NSE) ->
         data.get("annual_cashflow", pd.DataFrame()),
         market.fiscal_year,
     )
-    return build_trends(statements, market.trend_series, source="yfinance")
+    return build_trends(
+        statements, market.trend_series, source="yfinance", regulatory=regulatory,
+    )
 
 
-def build_historical_trends_edgar(facts: dict | None, market: MarketConfig | None = None) -> dict[str, Any]:
+def build_historical_trends_edgar(
+    facts: dict | None,
+    market: MarketConfig | None = None,
+    *,
+    regulatory: dict[int, dict[str, float | None]] | None = None,
+) -> dict[str, Any]:
     """Build S&P historical trends from SEC companyfacts."""
     if market is None:
         from .market import SNP as _snp
         market = _snp
     statements = AnnualStatements.from_edgar(facts)
-    return build_trends(statements, market.trend_series, source="edgar_xbrl")
+    return build_trends(
+        statements, market.trend_series, source="edgar_xbrl", regulatory=regulatory,
+    )
 
 
 def build_institutional_ownership(data: dict[str, Any]) -> dict | None:
@@ -202,35 +256,12 @@ def generate_insights(trends: dict[str, Any]) -> list[str]:
     """Generate 3-5 key insights from computed trends."""
     insights = []
 
-    rev = trends.get("revenue", {})
-    eps = trends.get("eps", {})
-    cf = trends.get("free_cash_flow", {})
-    debt = trends.get("debt_to_equity", {})
-
-    rcagr = rev.get("cagr_3yr")
-    ecagr = eps.get("cagr_3yr")
+    rcagr = cagr(trends.get("revenue", []))
+    ecagr = cagr(trends.get("diluted_eps", []))
     if rcagr is not None:
         insights.append(f"Revenue CAGR: {rcagr*100:+.1f}%")
     if ecagr is not None:
         insights.append(f"EPS CAGR: {ecagr*100:+.1f}%")
-
-    op_dir = cf.get("trend")
-    if op_dir == "consistently_growing" or op_dir == "mostly_growing":
-        insights.append(f"Operating cash flow: {op_dir}")
-    if op_dir == "declining":
-        insights.append("Operating cash flow declining")
-
-    ddte = debt.get("trend")
-    # classify_leverage() bands the latest *non-null* value (the most recent
-    # year can be None if not yet reported) -- mirror that here rather than
-    # indexing values[-1] directly, which crashed on names like NESTLEIND.
-    latest_de = next((v for v in reversed(debt.get("values", [])) if v is not None), None)
-    if ddte == "debt_free":
-        insights.append("Virtually debt-free")
-    if ddte == "low" and latest_de is not None:
-        insights.append(f"Low leverage (D/E {latest_de:.2f})")
-    if ddte == "high" and latest_de is not None:
-        insights.append(f"High leverage (D/E {latest_de:.2f})")
 
     return insights[:5]
 
@@ -245,10 +276,11 @@ def build_company_json(
     market: MarketConfig = NSE,
     cik: int | None = None,
     institutional_ownership: dict | None = None,
+    drawdown: float | None = None,
 ) -> dict:
     """Assemble the final per-company JSON."""
     info = data.get("info", {})
-    snapshot = build_current_snapshot(data, market)
+    snapshot = build_current_snapshot(data, market, drawdown=drawdown)
     bare_symbol = symbol.replace(market.ticker_suffix, "")
 
     m = (metadata or {}).get(f"{bare_symbol}{market.ticker_suffix}", {})

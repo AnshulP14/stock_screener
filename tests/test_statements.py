@@ -86,6 +86,40 @@ def test_from_yfinance_reads_matching_years_across_all_three_statements():
     assert stmts.free_cash_flow == [50.0, 60.0, 70.0]
 
 
+def test_from_yfinance_extracts_phase_3b_base_inputs():
+    income = pd.DataFrame({
+        FY_ENDS[2]: {
+            "Total Revenue": 1000.0,
+            "Operating Income": 120.0,
+            "Net Income": 80.0,
+            "Diluted Average Shares": 40.0,
+            "EBITDA": 150.0,
+        },
+    })
+    balance = pd.DataFrame({
+        FY_ENDS[2]: {
+            "Total Assets": 2000.0,
+            "Current Liabilities": 500.0,
+            "Cash Cash Equivalents And Short Term Investments": 200.0,
+            "Total Debt": 600.0,
+            "Stockholders Equity": 900.0,
+        },
+    })
+    cashflow = pd.DataFrame({
+        FY_ENDS[2]: {"Operating Cash Flow": 140.0, "Capital Expenditure": -30.0},
+    })
+
+    stmts = AnnualStatements.from_yfinance(income, balance, cashflow, NSE.fiscal_year)
+
+    assert stmts.operating_cash_flow == [140.0]
+    assert stmts.capex == [-30.0]
+    assert stmts.total_assets == [2000.0]
+    assert stmts.current_liabilities == [500.0]
+    assert stmts.cash_and_equivalents == [200.0]
+    assert stmts.diluted_shares == [40.0]
+    assert stmts.ebitda == [150.0]
+
+
 # ── from_yfinance: the misalignment regression ───────────────────────
 
 def test_from_yfinance_aligns_by_fiscal_year_not_position():
@@ -229,6 +263,41 @@ def test_from_edgar_missing_tag_entirely_is_all_none():
     assert stmts.total_debt == [None]
     assert stmts.stockholders_equity == [None]
     assert stmts.free_cash_flow == [None]
+
+
+def test_from_edgar_normalizes_validated_phase_3b_aliases_and_debt_components():
+    facts = _facts(
+        Revenues={"units": {"USD": [_entry(2024, 1000.0)]}},
+        ProfitLoss={"units": {"USD": [_entry(2024, 80.0)]}},
+        OperatingIncomeLoss={"units": {"USD": [_entry(2024, 120.0)]}},
+        Assets={"units": {"USD": [_entry(2024, 2000.0)]}},
+        LiabilitiesCurrent={"units": {"USD": [_entry(2024, 500.0)]}},
+        CashAndCashEquivalentsAtCarryingValue={"units": {"USD": [_entry(2024, 200.0)]}},
+        StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest={
+            "units": {"USD": [_entry(2024, 900.0)]}
+        },
+        WeightedAverageNumberOfDilutedSharesOutstanding={
+            "units": {"shares": [_entry(2024, 40.0)]}
+        },
+        NetCashProvidedByUsedInOperatingActivities={"units": {"USD": [_entry(2024, 140.0)]}},
+        PaymentsToAcquirePropertyPlantAndEquipment={"units": {"USD": [_entry(2024, 30.0)]}},
+        DepreciationDepletionAndAmortization={"units": {"USD": [_entry(2024, 30.0)]}},
+        LongTermDebtNoncurrent={"units": {"USD": [_entry(2024, 400.0)]}},
+        ShortTermBorrowings={"units": {"USD": [_entry(2024, 50.0)]}},
+    )
+
+    stmts = AnnualStatements.from_edgar(facts)
+
+    assert stmts.net_income == [80.0]
+    assert stmts.total_assets == [2000.0]
+    assert stmts.current_liabilities == [500.0]
+    assert stmts.cash_and_equivalents == [200.0]
+    assert stmts.stockholders_equity == [900.0]
+    assert stmts.diluted_shares == [40.0]
+    assert stmts.operating_cash_flow == [140.0]
+    assert stmts.capex == [30.0]
+    assert stmts.ebitda == [150.0]
+    assert stmts.total_debt == [450.0]
 
 
 def test_from_edgar_empty_or_none_facts_gives_no_years():

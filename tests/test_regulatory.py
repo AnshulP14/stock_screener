@@ -169,3 +169,42 @@ def test_ffiec_invalid_zip_does_not_replace_valid_cache(tmp_path):
     assert paths == {}
     assert errors[0][0] == 2024
     assert path.read_bytes() == valid
+
+
+def test_parse_nse_bank_history_reads_current_context_and_profile_metrics(tmp_path):
+    symbol_dir = tmp_path / "HDFCBANK"
+    symbol_dir.mkdir()
+    (symbol_dir / "2025.xml").write_text("""<?xml version="1.0"?>
+      <xbrl xmlns:bank="https://example.test/bank">
+        <bank:PercentageOfGrossNpa contextRef="OneD">0.0133</bank:PercentageOfGrossNpa>
+        <bank:PercentageOfGrossNpa contextRef="FourD">0.0999</bank:PercentageOfGrossNpa>
+        <bank:PercentageOfNpa contextRef="OneD">0.0041</bank:PercentageOfNpa>
+        <bank:CET1Ratio contextRef="OneD">0.1955</bank:CET1Ratio>
+        <bank:Advances contextRef="OneI">1000</bank:Advances>
+        <bank:Deposits contextRef="OneI">800</bank:Deposits>
+      </xbrl>
+    """)
+
+    history = regulatory.parse_nse_bank_history("HDFCBANK", cache_root=tmp_path)
+
+    assert history == {2025: {
+        "nonperforming_loans_ratio": 0.0133,
+        "net_npa_ratio": 0.0041,
+        "cet1_ratio": 0.1955,
+        "loans": 1000.0,
+        "deposits": 800.0,
+    }}
+
+
+def test_parse_ffiec_history_selects_rssd_and_normalizes_percent_units(tmp_path):
+    (tmp_path / "BHCF20241231.zip").write_bytes(_ffiec_zip())
+
+    history = regulatory.parse_ffiec_history(1039502, cache_dir=tmp_path)
+
+    assert history == {2024: {
+        "nonperforming_loans_ratio": 0.03,
+        "cet1_ratio": 0.156,
+        "loans": 100.0,
+        "deposits": None,
+    }}
+    assert regulatory.parse_ffiec_history(9999999, cache_dir=tmp_path) == {}

@@ -41,6 +41,8 @@ from screener.regulatory import (
     download_nse_bank_filings,
     ffiec_rssd_ids,
     is_yahoo_bank,
+    parse_ffiec_history,
+    parse_nse_bank_history,
     rssd_id,
 )
 from screener.runner import run_fetch_pipeline, write_failure_log
@@ -50,6 +52,7 @@ from screener.transform import (
     build_historical_trends,
     build_historical_trends_edgar,
     build_institutional_ownership,
+    drawdown_52w,
 )
 
 
@@ -87,7 +90,11 @@ def _write_manifest(market: MarketConfig, companies_dir: Path) -> None:
 
     if market.uses_edgar:
         entry["edgar_coverage"] = _coverage(
-            companies_dir, lambda c: bool(c.get("historical_trends", {}).get("years_available"))
+            companies_dir,
+            lambda c: bool(
+                c.get("historical_trends", {}).get("fiscal_years")
+                or c.get("historical_trends", {}).get("years_available")
+            ),
         )
 
     update_manifest(market.id, entry)
@@ -315,33 +322,42 @@ def _fetch_and_save(
             q.put(sym)
 
     def handle(sym: str, raw: dict) -> dict:
+        price_path = RAW_DIR / market.id / "prices" / f"{sym}.csv"
         try:
             cache_price_history(
                 raw.get("price_history", pd.DataFrame()),
-                RAW_DIR / market.id / "prices" / f"{sym}.csv",
+                price_path,
             )
         except Exception as e:
             print(f"  [{market.label} prices] {sym}: cache error: {e}", flush=True)
 
+        regulatory_history = {}
         if market.id == "nse" and is_yahoo_bank(raw.get("info", {})):
             try:
                 download_nse_bank_filings(sym, days_old=days_old)
             except Exception as e:
                 with bank_lock:
                     bank_errors.append(f"{sym}: {e}")
+            regulatory_history = parse_nse_bank_history(sym)
 
         if market.uses_edgar:
             cik = cik_map.get(sym)
-            trends = build_historical_trends_edgar(fetch_facts(sym, cik), market)
+            resolved = rssd_id(sym)
+            if is_yahoo_bank(raw.get("info", {})) and resolved is not None:
+                regulatory_history = parse_ffiec_history(resolved)
+            trends = build_historical_trends_edgar(
+                fetch_facts(sym, cik), market, regulatory=regulatory_history,
+            )
         else:
             cik = None
-            trends = build_historical_trends(raw, market)
+            trends = build_historical_trends(raw, market, regulatory=regulatory_history)
         institutional_ownership = (
             build_institutional_ownership(raw) if market.uses_edgar else None
         )
         company = build_company_json(
             sym, raw, metadata, trends, market=market,
             cik=cik, institutional_ownership=institutional_ownership,
+            drawdown=drawdown_52w(price_path),
         )
         if market.id == "snp" and is_yahoo_bank(raw.get("info", {})):
             resolved = rssd_id(sym)
@@ -378,13 +394,21 @@ def _fetch_and_save(
         pd.DataFrame([r["snapshot"] for r in results]).to_csv(
             market.raw_csv_dir / "current_metrics.csv", index=False
         )
-        records = [
-            {"symbol": r["trends"].get("symbol"), "fiscal_year": fy,
-             "revenue": r["trends"].get("revenue", {}).get("values"),
-             "net_income": r["trends"].get("net_income", {}).get("values"),
-             "eps": r["trends"].get("eps", {}).get("values")}
-            for r in results for fy in r["trends"].get("years_available", [])
-        ]
+        records = []
+        for result in results:
+            trends = result["trends"]
+            years = trends.get("fiscal_years") or trends.get("years_available", [])
+            for index, fiscal_year in enumerate(years):
+                record = {"symbol": trends.get("symbol"), "fiscal_year": fiscal_year}
+                for output, series in (
+                    ("revenue", "revenue"), ("net_income", "net_income"),
+                    ("eps", "diluted_eps"),
+                ):
+                    values = trends.get(series, [])
+                    if isinstance(values, dict):
+                        values = values.get("values", [])
+                    record[output] = values[index] if index < len(values) else None
+                records.append(record)
         pd.DataFrame(records).to_csv(market.raw_csv_dir / "historical_annual.csv", index=False)
 
     # Stage B is done (consumer joined above); rebuild indices/DB now rather

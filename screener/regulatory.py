@@ -8,13 +8,14 @@ import os
 import tempfile
 import time
 import zipfile
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from xml.etree import ElementTree
 
 from curl_cffi import requests as curl_requests
 
 from .config import FETCH_TIMEOUT, RAW_DIR
+from .statements import safe_float
 
 NSE_FILINGS_API = "https://www.nseindia.com/api/integrated-filing-results"
 NSE_FILINGS_PAGE = "https://www.nseindia.com/companies-listing/corporate-integrated-filing"
@@ -103,7 +104,8 @@ def _filing_date(row: dict) -> date | None:
         return None
     for fmt in ("%d-%b-%Y", "%d-%m-%Y", "%Y-%m-%d", "%d/%m/%Y"):
         try:
-            return datetime.strptime(str(raw).strip(), fmt).date()
+            parsed = time.strptime(str(raw).strip(), fmt)
+            return date(parsed.tm_year, parsed.tm_mon, parsed.tm_mday)
         except ValueError:
             pass
     return None
@@ -216,6 +218,83 @@ def ffiec_rssd_ids(path: Path) -> set[int]:
                 for row in rows
                 if row.get("RSSD9001", "").strip().isdigit()
             }
+
+
+def parse_nse_bank_history(
+    symbol: str, *, cache_root: Path | None = None,
+) -> dict[int, dict[str, float | None]]:
+    """Parse cached NSE banking XBRL into annual profile inputs."""
+    root = cache_root or RAW_DIR / "nse" / "bank_xbrl"
+    history = {}
+    tags = {
+        "PercentageOfGrossNpa": "nonperforming_loans_ratio",
+        "PercentageOfNpa": "net_npa_ratio",
+        "CET1Ratio": "cet1_ratio",
+        "Advances": "loans",
+        "Deposits": "deposits",
+    }
+    for path in sorted((root / symbol).glob("*.xml")):
+        try:
+            year = int(path.stem)
+            elements = sorted(
+                ElementTree.parse(path).getroot().iter(),
+                key=lambda element: not element.attrib.get("contextRef", "").startswith("One"),
+            )
+        except (OSError, ValueError, ElementTree.ParseError):
+            continue
+        values: dict[str, float | None] = {}
+        for element in elements:
+            local_name = element.tag.rsplit("}", 1)[-1]
+            output_name = tags.get(local_name)
+            if output_name and output_name not in values:
+                values[output_name] = safe_float(element.text)
+        if values:
+            history[year] = {output: values.get(output) for output in tags.values()}
+    return history
+
+
+def parse_ffiec_history(
+    rssd: int, *, cache_dir: Path | None = None,
+) -> dict[int, dict[str, float | None]]:
+    """Parse one holding company's annual rows from cached December BHCF files."""
+    cache_dir = cache_dir or RAW_DIR / "snp" / "ffiec"
+    history = {}
+    for path in sorted(cache_dir.glob("BHCF*1231.zip")):
+        try:
+            with zipfile.ZipFile(path) as archive:
+                member = next(
+                    name for name in archive.namelist() if name.lower().endswith(".txt")
+                )
+                with archive.open(member) as data:
+                    rows = csv.DictReader(
+                        io.TextIOWrapper(data, encoding="latin-1"), delimiter="^",
+                    )
+                    row = next(
+                        (item for item in rows if safe_float(item.get("RSSD9001")) == rssd),
+                        None,
+                    )
+            if row is None:
+                continue
+            report_date = str(row.get("RSSD9999") or "")
+            year = int(report_date[:4] or path.name[4:8])
+            nonaccrual = safe_float(row.get("BHCK1403"))
+            past_due = safe_float(row.get("BHCK1407"))
+            loans = safe_float(row.get("BHCK2122"))
+            npl_ratio = (
+                (nonaccrual + past_due) / loans
+                if nonaccrual is not None and past_due is not None and loans and loans > 0
+                else None
+            )
+            cet1 = safe_float(row.get("BHCAP793"))
+            history[year] = {
+                "nonperforming_loans_ratio": npl_ratio,
+                "cet1_ratio": cet1 / 100 if cet1 is not None else None,
+                "loans": loans,
+                "deposits": None,
+            }
+        except (OSError, ValueError, zipfile.BadZipFile, StopIteration):
+            continue
+    return history
 
 
 def download_ffiec_years(

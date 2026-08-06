@@ -4,11 +4,14 @@ import pandas as pd
 import pytest
 
 from screener.market import NSE, SNP
+from screener.statements import AnnualLineItems, AnnualStatements
 from screener.transform import (
     build_company_json,
     build_current_snapshot,
     build_historical_trends_edgar,
     build_institutional_ownership,
+    build_trends,
+    drawdown_52w,
 )
 
 
@@ -45,6 +48,22 @@ def test_size_fields_are_unsuffixed_regardless_of_market():
     assert snapshot["size"]["market_cap"] == 3e12
     assert snapshot["size"]["enterprise_value"] == 3.1e12
     assert snapshot["size"]["total_revenue"] == 4e11
+
+
+def test_drawdown_52w_reads_cached_adjusted_prices_and_company_profile_stores_it(tmp_path):
+    path = tmp_path / "AAA.csv"
+    pd.DataFrame({
+        "date": ["2026-01-01", "2026-02-01", "2026-03-01", "2026-04-01"],
+        "adjusted_close": [100.0, 120.0, 90.0, 110.0],
+    }).to_csv(path, index=False)
+
+    value = drawdown_52w(path)
+    company = build_company_json(
+        "AAPL", {"symbol": "AAPL", "info": {}}, market=SNP, drawdown=value,
+    )
+
+    assert value == pytest.approx(-0.25)
+    assert company["current_snapshot"]["risk"]["drawdown_52w"] == pytest.approx(-0.25)
 
 
 def test_us_company_json_gets_usd_currency_not_hardcoded_inr():
@@ -135,36 +154,103 @@ def _edgar_facts():
 def test_build_historical_trends_edgar_source_is_edgar_xbrl():
     trends = build_historical_trends_edgar(_edgar_facts())
     assert trends["source"] == "edgar_xbrl"
-    assert trends["years_available"] == [2023, 2024]
+    assert trends["fiscal_years"] == [2023, 2024]
 
 
-def test_build_historical_trends_edgar_has_no_roe_or_debt_fields():
-    # SNP lacks balance-sheet data in EDGAR, so composites are absent.
+def test_build_historical_trends_edgar_preserves_missing_balance_metrics_as_aligned_nulls():
     trends = build_historical_trends_edgar(_edgar_facts())
-    assert "roe" not in trends
-    assert "debt_to_equity" not in trends
-    assert "free_cash_flow" not in trends
-    # Revenue still gets yoy_growth from the unified builder
-    assert "yoy_growth" in trends["revenue"]
+    assert trends["roe"] == [None, None]
+    assert trends["roa"] == [None, None]
+    assert trends["net_debt_to_ebitda"] == [None, None]
 
 
-def test_build_historical_trends_edgar_gross_profit_and_ocf_use_values_key():
-    # Unified output key: "values" for both markets (currency is on company JSON top level).
+def test_build_historical_trends_edgar_uses_direct_aligned_arrays():
     trends = build_historical_trends_edgar(_edgar_facts())
-    assert trends["gross_profit"]["values"] == [400.0, 450.0]
-    assert trends["operating_cash_flow"]["values"] == [-10.0, 150.0]
-    assert trends["operating_cash_flow"]["positive_years"] == 1
+    assert trends["gross_profit"] == [400.0, 450.0]
+    assert trends["operating_cash_flow"] == [-10.0, 150.0]
 
 
-def test_build_historical_trends_edgar_operating_margin_has_values_and_direction():
+def test_build_historical_trends_edgar_operating_margin_is_an_aligned_array():
     trends = build_historical_trends_edgar(_edgar_facts())
-    assert trends["operating_margin"]["values"] == pytest.approx([0.08, 0.09])
-    assert "direction" in trends["operating_margin"]
+    assert trends["operating_margin"] == pytest.approx([0.08, 0.09])
 
 
 def test_build_historical_trends_edgar_no_data_returns_error_marker():
     trends = build_historical_trends_edgar(None)
-    assert trends == {"source": "edgar_xbrl", "years_available": [], "error": "no_data"}
+    assert trends == {"source": "edgar_xbrl", "fiscal_years": [], "error": "no_data"}
+
+
+def test_build_historical_trends_edgar_merges_regulatory_years():
+    trends = build_historical_trends_edgar(
+        _edgar_facts(),
+        regulatory={2024: {"nonperforming_loans_ratio": 0.02, "cet1_ratio": 0.14}},
+    )
+
+    assert trends["nonperforming_loans_ratio"] == [None, 0.02]
+    assert trends["cet1_ratio"] == [None, 0.14]
+
+
+def test_build_trends_produces_aligned_phase_3b_series_and_formulas():
+    statements = AnnualStatements(by_year={
+        2022: AnnualLineItems(
+            revenue=1000, gross_profit=400, operating_income=100, net_income=80,
+            operating_cash_flow=120, capex=-20, total_assets=1000,
+            current_liabilities=200, cash_and_equivalents=100, total_debt=300,
+            stockholders_equity=500, diluted_shares=10, ebitda=150,
+        ),
+        2023: AnnualLineItems(
+            revenue=1100, gross_profit=440, operating_income=121, net_income=88,
+            operating_cash_flow=130, capex=30, total_assets=1200,
+            current_liabilities=220, cash_and_equivalents=110, total_debt=330,
+            stockholders_equity=550, diluted_shares=9.5, ebitda=160,
+        ),
+        2024: AnnualLineItems(
+            revenue=1200, gross_profit=480, operating_income=144, net_income=96,
+            operating_cash_flow=140, capex=40, total_assets=1400,
+            current_liabilities=240, cash_and_equivalents=120, total_debt=360,
+            stockholders_equity=600, diluted_shares=9, ebitda=180,
+        ),
+    })
+    regulatory = {
+        2023: {"nonperforming_loans_ratio": 0.02, "cet1_ratio": 0.14, "loans": 700},
+        2024: {"nonperforming_loans_ratio": 0.018, "cet1_ratio": 0.15, "loans": 760},
+    }
+
+    trends = build_trends(statements, (), source="test", regulatory=regulatory)
+
+    assert trends["fiscal_years"] == [2022, 2023, 2024]
+    assert trends["free_cash_flow"] == [100, 100, 100]
+    assert trends["operating_margin"] == pytest.approx([0.10, 0.11, 0.12])
+    assert trends["roe"] == [None, pytest.approx(88 / 525), pytest.approx(96 / 575)]
+    assert trends["roa"] == [None, pytest.approx(88 / 1100), pytest.approx(96 / 1300)]
+    assert trends["roce"] == [None, pytest.approx(121 / 890), pytest.approx(144 / 1070)]
+    assert trends["net_debt"] == [200, 220, 240]
+    assert trends["net_debt_to_ebitda"] == pytest.approx([200 / 150, 220 / 160, 240 / 180])
+    assert trends["nonperforming_loans_ratio"] == [None, 0.02, 0.018]
+    assert trends["cet1_ratio"] == [None, 0.14, 0.15]
+    assert all(len(trends[field]) == 3 for field in (
+        "revenue", "capex", "fcf_margin", "cfo_to_net_income", "capex_intensity",
+        "loans", "deposits",
+    ))
+
+
+def test_average_balance_returns_require_consecutive_fiscal_years():
+    statements = AnnualStatements(by_year={
+        2022: AnnualLineItems(
+            net_income=80, operating_income=100, total_assets=1000,
+            current_liabilities=200, stockholders_equity=500,
+        ),
+        2024: AnnualLineItems(
+            net_income=96, operating_income=144, total_assets=1400,
+            current_liabilities=240, stockholders_equity=600,
+        ),
+    })
+
+    trends = build_trends(statements, (), source="test")
+
+    assert trends["roe"] == [None, None]
+    assert trends["roa"] == [None, None]
+    assert trends["roce"] == [None, None]
 
 
 # ── build_institutional_ownership ────────────────────────────────────
