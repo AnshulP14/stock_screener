@@ -1,8 +1,11 @@
 """NSE/S&P universes and per-symbol Yahoo Finance fundamentals."""
 
 import io
+import os
 import threading
+import tempfile
 from datetime import date
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -101,6 +104,7 @@ def _empty_result(symbol: str, error: str | None) -> dict[str, Any]:
         "annual_balance": pd.DataFrame(),
         "annual_cashflow": pd.DataFrame(),
         "institutional_holders": pd.DataFrame(),
+        "price_history": pd.DataFrame(),
         "fetch_time": date.today().isoformat(),
         "error": error,
     }
@@ -117,6 +121,12 @@ def fetch_ticker_data(
             # An unknown/delisted symbol returns a stub with no pricing fields.
             if not info.get("symbol") and not info.get("regularMarketPrice"):
                 return _empty_result(symbol, "no data returned (delisted or unknown symbol)")
+            try:
+                prices = _df_or_empty(ticker.history(
+                    period="1y", auto_adjust=False, actions=False,
+                ))
+            except Exception:
+                prices = pd.DataFrame()
             return {
                 "symbol": symbol,
                 "info": info,
@@ -126,8 +136,38 @@ def fetch_ticker_data(
                 "institutional_holders": (
                     _df_or_empty(ticker.institutional_holders) if institutional_holders else pd.DataFrame()
                 ),
+                "price_history": prices,
                 "fetch_time": date.today().isoformat(),
                 "error": None,
             }
     except Exception as e:
         return _empty_result(symbol, str(e))
+
+
+def cache_price_history(prices: pd.DataFrame, path: Path) -> bool:
+    """Atomically cache Yahoo's date and adjusted close columns."""
+    if prices.empty or "Adj Close" not in prices:
+        return False
+
+    compact = prices[["Adj Close"]].reset_index()
+    compact = compact.iloc[:, [0, 1]]
+    compact.columns = ["date", "adjusted_close"]
+    compact["date"] = pd.to_datetime(compact["date"], errors="coerce").dt.date
+    compact["adjusted_close"] = pd.to_numeric(compact["adjusted_close"], errors="coerce")
+    compact = compact.dropna().drop_duplicates("date", keep="last").sort_values("date")
+    if compact.empty:
+        return False
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as tmp:
+            compact.to_csv(tmp, index=False)
+        os.replace(tmp_name, path)
+    except Exception:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+        raise
+    return True

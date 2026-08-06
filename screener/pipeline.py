@@ -8,6 +8,8 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
+
 from screener.annual_reports import (
     NSE_REPORTS_DIR,
     SNP_REPORTS_DIR,
@@ -16,11 +18,11 @@ from screener.annual_reports import (
     is_report_stale,
     screener_session,
 )
-from screener.config import MAX_WORKERS, ROOT
+from screener.config import MAX_WORKERS, RAW_DIR, ROOT
 from screener.db import rebuild as rebuild_db
 from screener.edgar import build_cik_map, fetch_facts
 from screener.enrich import get_stale_symbols, process_symbol_full
-from screener.fetch import fetch_ticker_data
+from screener.fetch import cache_price_history, fetch_ticker_data
 from screener.filings import html_filings as hf
 from screener.filings import pdf_filings as pf
 from screener.freshness import stale_symbols
@@ -33,6 +35,14 @@ from screener.index import (
     update_manifest,
 )
 from screener.market import ALL_MODES, MarketConfig
+from screener.regulatory import (
+    completed_december_years,
+    download_ffiec_years,
+    download_nse_bank_filings,
+    ffiec_rssd_ids,
+    is_yahoo_bank,
+    rssd_id,
+)
 from screener.runner import run_fetch_pipeline, write_failure_log
 from screener.transform import (
     build_company_json,
@@ -205,6 +215,7 @@ def _fetch_and_save(
     start: float,
     targeted: bool = False,
     fetch_reports: bool = True,
+    days_old: int = 7,
 ) -> dict:
     """Fetch and persist symbols, run enrichment, then rebuild indices and DB."""
     companies_dir = market.companies_dir
@@ -218,6 +229,28 @@ def _fetch_and_save(
     # fetch of SEC's full ticker->CIK table (see fetch.build_cik_map's
     # docstring: no cik_map.json cache, resolved fresh in memory each run).
     cik_map = build_cik_map() if market.uses_edgar else {}
+    bank_errors: list[str] = []
+    missing_rssd: set[str] = set()
+    bank_lock = threading.Lock()
+
+    # A BHCF file contains every institution, so fetch each year once per run.
+    mapped_rssd = {sym: rssd_id(sym) for sym in symbols if market.id == "snp" and rssd_id(sym)}
+    if mapped_rssd:
+        try:
+            ffiec_paths, ffiec_errors = download_ffiec_years(
+                completed_december_years(), days_old=days_old,
+            )
+            bank_errors.extend(f"FFIEC {year}: {error}" for year, error in ffiec_errors)
+            if ffiec_paths:
+                latest_path = ffiec_paths[max(ffiec_paths)]
+                present = ffiec_rssd_ids(latest_path)
+                for sym, resolved in mapped_rssd.items():
+                    if resolved not in present:
+                        bank_errors.append(
+                            f"{sym}: RSSD {resolved} absent from {latest_path.name}"
+                        )
+        except Exception as e:
+            bank_errors.append(f"FFIEC: {e}")
 
     already = set(symbols)
     extra: set[str] = set()
@@ -282,6 +315,21 @@ def _fetch_and_save(
             q.put(sym)
 
     def handle(sym: str, raw: dict) -> dict:
+        try:
+            cache_price_history(
+                raw.get("price_history", pd.DataFrame()),
+                RAW_DIR / market.id / "prices" / f"{sym}.csv",
+            )
+        except Exception as e:
+            print(f"  [{market.label} prices] {sym}: cache error: {e}", flush=True)
+
+        if market.id == "nse" and is_yahoo_bank(raw.get("info", {})):
+            try:
+                download_nse_bank_filings(sym, days_old=days_old)
+            except Exception as e:
+                with bank_lock:
+                    bank_errors.append(f"{sym}: {e}")
+
         if market.uses_edgar:
             cik = cik_map.get(sym)
             trends = build_historical_trends_edgar(fetch_facts(sym, cik), market)
@@ -295,6 +343,13 @@ def _fetch_and_save(
             sym, raw, metadata, trends, market=market,
             cik=cik, institutional_ownership=institutional_ownership,
         )
+        if market.id == "snp" and is_yahoo_bank(raw.get("info", {})):
+            resolved = rssd_id(sym)
+            if resolved is None:
+                with bank_lock:
+                    missing_rssd.add(sym)
+            else:
+                company["rssd_id"] = resolved
         merge_company(companies_dir, sym, company)
         q.put(sym)
         trends["symbol"] = sym
@@ -319,7 +374,6 @@ def _fetch_and_save(
 
     # NSE-only: raw CSV snapshots (historical-trend CSVs never used for SNP).
     if market.raw_csv_dir and results:
-        import pandas as pd
         market.raw_csv_dir.mkdir(parents=True, exist_ok=True)
         pd.DataFrame([r["snapshot"] for r in results]).to_csv(
             market.raw_csv_dir / "current_metrics.csv", index=False
@@ -378,6 +432,12 @@ def _fetch_and_save(
         f"  [{market.label}] Company checks: "
         f"{stats['checked']} complete, {stats['errors']} errors"
     )
+    print(f"  [{market.label}] Bank downloads: {len(bank_errors)} errors")
+    if missing_rssd:
+        print(
+            f"  [{market.label}] Bank warning: no reviewed RSSD mapping for "
+            f"{', '.join(sorted(missing_rssd))}"
+        )
     if fetch_reports:
         print(
             f"  [{market.label}] Annual reports: "
@@ -469,4 +529,5 @@ def run_pipeline(
         workers=workers, start=start,
         targeted=targeted,
         fetch_reports=fetch_reports,
+        days_old=days_old,
     )

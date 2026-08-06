@@ -24,7 +24,7 @@ def _isolate_external_state(tmp_path, monkeypatch):
 
 def _test_market(tmp_path, *, fetch_universe, **kwargs) -> MarketConfig:
     return MarketConfig(
-        id="test",
+        id=kwargs.pop("id", "test"),
         label="TEST",
         currency="USD",
         ticker_suffix="",
@@ -271,6 +271,94 @@ def test_snp_report_job_logs_when_the_report_is_ready(tmp_path, monkeypatch, cap
     output = capsys.readouterr().out
     assert "[S&P 500 reports] AAA: downloading" in output
     assert "[S&P 500 reports] AAA: ready" in output
+
+
+# ── Phase 3A acquisition routing ───────────────────────────────────
+
+def test_non_bank_refresh_makes_no_regulatory_calls(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        markets_mod, "fetch_ticker_data",
+        lambda symbol, **kw: {
+            "symbol": symbol, "info": {"industry": "Software - Infrastructure"},
+            "fetch_time": "2026-01-01", "error": None,
+        },
+    )
+    monkeypatch.setattr(
+        markets_mod, "download_nse_bank_filings", lambda *a, **kw: calls.append(a),
+    )
+    market = _test_market(tmp_path, id="nse", fetch_universe=lambda: (["AAA"], None))
+
+    result = run_pipeline(market, mode="full-sync", fetch_reports=False)
+
+    assert result["fetched"] == 1
+    assert calls == []
+
+
+def test_nse_bank_failure_keeps_base_fundamentals_and_skip_reports_does_not_skip_bank(
+    tmp_path, monkeypatch, capsys,
+):
+    calls = []
+    monkeypatch.setattr(
+        markets_mod, "fetch_ticker_data",
+        lambda symbol, **kw: {
+            "symbol": symbol, "info": {"industry": "Banks - Regional"},
+            "fetch_time": "2026-01-01", "error": None,
+        },
+    )
+
+    def fail_bank(symbol, **kwargs):
+        calls.append((symbol, kwargs["days_old"]))
+        raise RuntimeError("NSE unavailable")
+
+    monkeypatch.setattr(markets_mod, "download_nse_bank_filings", fail_bank)
+    market = _test_market(
+        tmp_path, id="nse", fetch_universe=lambda: (["HDFCBANK"], None),
+    )
+
+    result = run_pipeline(
+        market, mode="full-sync", days_old=11, fetch_reports=False,
+    )
+
+    assert result["fetched"] == 1 and result["failed"] == 0
+    assert calls == [("HDFCBANK", 11)]
+    assert (tmp_path / "companies" / "HDFCBANK.json").exists()
+    assert "Bank downloads: 1 errors" in capsys.readouterr().out
+
+
+def test_snp_bank_downloads_years_once_and_stores_reviewed_rssd(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(markets_mod, "build_cik_map", lambda: {"JPM": 19617, "BAC": 70858})
+    monkeypatch.setattr(markets_mod, "fetch_facts", lambda symbol, cik: {})
+    monkeypatch.setattr(
+        markets_mod, "fetch_ticker_data",
+        lambda symbol, **kw: {
+            "symbol": symbol, "info": {"industry": "Banks - Diversified"},
+            "fetch_time": "2026-01-01", "error": None,
+        },
+    )
+
+    def fake_ffiec(years, **kwargs):
+        calls.append((years, kwargs["days_old"]))
+        return {years[0]: tmp_path / "latest.zip"}, []
+
+    monkeypatch.setattr(markets_mod, "download_ffiec_years", fake_ffiec)
+    monkeypatch.setattr(markets_mod, "ffiec_rssd_ids", lambda path: {1039502, 1073757})
+    market = _test_market(
+        tmp_path, id="snp", fetch_universe=lambda: (["JPM", "BAC"], None), uses_edgar=True,
+    )
+
+    result = run_pipeline(
+        market, symbols=["jpm", "bac"], days_old=9, fetch_reports=False,
+    )
+
+    assert result["fetched"] == 2
+    assert len(calls) == 1
+    assert calls[0][1] == 9 and len(calls[0][0]) == 5
+    company = json.loads((tmp_path / "companies" / "JPM.json").read_text())
+    assert company["rssd_id"] == 1039502
+    company = json.loads((tmp_path / "companies" / "BAC.json").read_text())
+    assert company["rssd_id"] == 1073757
 
 
 def test_final_summary_waits_for_and_reports_annual_report_result(

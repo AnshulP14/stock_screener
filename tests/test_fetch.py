@@ -58,4 +58,58 @@ def test_fetch_ticker_data_returns_complete_empty_shape_on_unknown_symbol(monkey
     assert result["symbol"] == "UNKNOWN"
     assert all(isinstance(result[key], pd.DataFrame) for key in (
         "annual_income", "annual_balance", "annual_cashflow", "institutional_holders",
+        "price_history",
     ))
+
+
+def test_fetch_ticker_data_requests_one_year_of_unadjusted_history(monkeypatch):
+    calls = []
+    prices = pd.DataFrame(
+        {"Adj Close": [100.0, 101.0]},
+        index=pd.to_datetime(["2026-01-02", "2026-01-05"]),
+    )
+
+    class Ticker:
+        def __init__(self, symbol, session):
+            self.info = {"symbol": symbol}
+            self.income_stmt = self.balance_sheet = self.cashflow = pd.DataFrame()
+
+        def history(self, **kwargs):
+            calls.append(kwargs)
+            return prices
+
+    monkeypatch.setattr(fetch.yf, "Ticker", Ticker)
+    monkeypatch.setattr(fetch, "_yf_session", object)
+
+    result = fetch.fetch_ticker_data("AAA", annual_statements=False)
+
+    assert result["price_history"] is prices
+    assert calls == [{"period": "1y", "auto_adjust": False, "actions": False}]
+
+
+def test_cache_price_history_keeps_only_contract_columns_and_replaces_atomically(tmp_path):
+    path = tmp_path / "prices" / "AAA.csv"
+    path.parent.mkdir()
+    path.write_text("old cache")
+    prices = pd.DataFrame(
+        {"Open": [99.0, 100.0], "Adj Close": [100.0, 101.5], "Volume": [1, 2]},
+        index=pd.to_datetime(["2026-01-02", "2026-01-05"]),
+    )
+
+    assert fetch.cache_price_history(prices, path) is True
+
+    cached = pd.read_csv(path)
+    assert list(cached.columns) == ["date", "adjusted_close"]
+    assert cached.to_dict("records") == [
+        {"date": "2026-01-02", "adjusted_close": 100.0},
+        {"date": "2026-01-05", "adjusted_close": 101.5},
+    ]
+    assert list(path.parent.iterdir()) == [path]
+
+
+def test_empty_price_history_does_not_overwrite_valid_cache(tmp_path):
+    path = tmp_path / "AAA.csv"
+    path.write_text("date,adjusted_close\n2026-01-02,100\n")
+
+    assert fetch.cache_price_history(pd.DataFrame(), path) is False
+    assert path.read_text() == "date,adjusted_close\n2026-01-02,100\n"
