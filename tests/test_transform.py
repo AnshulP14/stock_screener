@@ -8,9 +8,9 @@ from screener.statements import AnnualLineItems, AnnualStatements
 from screener.transform import (
     build_company_json,
     build_current_snapshot,
-    build_historical_trends_edgar,
+    build_historical_series_edgar,
     build_institutional_ownership,
-    build_trends,
+    build_series,
     drawdown_52w,
 )
 
@@ -57,7 +57,7 @@ def test_drawdown_52w_reads_cached_adjusted_prices_and_company_profile_stores_it
         "adjusted_close": [100.0, 120.0, 90.0, 110.0],
     }).to_csv(path, index=False)
 
-    value = drawdown_52w(path)
+    value = drawdown_52w(pd.read_csv(path))
     company = build_company_json(
         "AAPL", {"symbol": "AAPL", "info": {}}, market=SNP, drawdown=value,
     )
@@ -152,36 +152,36 @@ def _edgar_facts():
 
 
 def test_build_historical_trends_edgar_source_is_edgar_xbrl():
-    trends = build_historical_trends_edgar(_edgar_facts())
+    trends = build_historical_series_edgar(_edgar_facts())
     assert trends["source"] == "edgar_xbrl"
     assert trends["fiscal_years"] == [2023, 2024]
 
 
 def test_build_historical_trends_edgar_preserves_missing_balance_metrics_as_aligned_nulls():
-    trends = build_historical_trends_edgar(_edgar_facts())
+    trends = build_historical_series_edgar(_edgar_facts())
     assert trends["roe"] == [None, None]
     assert trends["roa"] == [None, None]
     assert trends["net_debt_to_ebitda"] == [None, None]
 
 
 def test_build_historical_trends_edgar_uses_direct_aligned_arrays():
-    trends = build_historical_trends_edgar(_edgar_facts())
+    trends = build_historical_series_edgar(_edgar_facts())
     assert trends["gross_profit"] == [400.0, 450.0]
     assert trends["operating_cash_flow"] == [-10.0, 150.0]
 
 
 def test_build_historical_trends_edgar_operating_margin_is_an_aligned_array():
-    trends = build_historical_trends_edgar(_edgar_facts())
+    trends = build_historical_series_edgar(_edgar_facts())
     assert trends["operating_margin"] == pytest.approx([0.08, 0.09])
 
 
 def test_build_historical_trends_edgar_no_data_returns_error_marker():
-    trends = build_historical_trends_edgar(None)
+    trends = build_historical_series_edgar(None)
     assert trends == {"source": "edgar_xbrl", "fiscal_years": [], "error": "no_data"}
 
 
 def test_build_historical_trends_edgar_merges_regulatory_years():
-    trends = build_historical_trends_edgar(
+    trends = build_historical_series_edgar(
         _edgar_facts(),
         regulatory={2024: {"nonperforming_loans_ratio": 0.02, "cet1_ratio": 0.14}},
     )
@@ -216,7 +216,7 @@ def test_build_trends_produces_aligned_phase_3b_series_and_formulas():
         2024: {"nonperforming_loans_ratio": 0.018, "cet1_ratio": 0.15, "loans": 760},
     }
 
-    trends = build_trends(statements, (), source="test", regulatory=regulatory)
+    trends = build_series(statements, source="test", regulatory=regulatory)
 
     assert trends["fiscal_years"] == [2022, 2023, 2024]
     assert trends["free_cash_flow"] == [100, 100, 100]
@@ -246,7 +246,7 @@ def test_average_balance_returns_require_consecutive_fiscal_years():
         ),
     })
 
-    trends = build_trends(statements, (), source="test")
+    trends = build_series(statements, source="test")
 
     assert trends["roe"] == [None, None]
     assert trends["roa"] == [None, None]

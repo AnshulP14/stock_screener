@@ -171,3 +171,11 @@ def cache_price_history(prices: pd.DataFrame, path: Path) -> bool:
             pass
         raise
     return True
+
+
+def read_price_history(path: Path) -> pd.DataFrame:
+    """Read the compact adjusted-price cache, or return an empty frame."""
+    try:
+        return pd.read_csv(path, usecols=["date", "adjusted_close"])
+    except (OSError, ValueError):
+        return pd.DataFrame(columns=["date", "adjusted_close"])

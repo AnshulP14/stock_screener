@@ -83,7 +83,6 @@ def test_from_yfinance_reads_matching_years_across_all_three_statements():
     assert stmts.operating_income == [80.0, 90.0, 100.0]
     assert stmts.total_debt == [5.0, 40.0, 160.0]
     assert stmts.stockholders_equity == [100.0, 100.0, 100.0]
-    assert stmts.free_cash_flow == [50.0, 60.0, 70.0]
 
 
 def test_from_yfinance_extracts_phase_3b_base_inputs():
@@ -262,7 +261,6 @@ def test_from_edgar_missing_tag_entirely_is_all_none():
     assert stmts.gross_profit == [None]
     assert stmts.total_debt == [None]
     assert stmts.stockholders_equity == [None]
-    assert stmts.free_cash_flow == [None]
 
 
 def test_from_edgar_normalizes_validated_phase_3b_aliases_and_debt_components():
@@ -298,6 +296,16 @@ def test_from_edgar_normalizes_validated_phase_3b_aliases_and_debt_components():
     assert stmts.capex == [30.0]
     assert stmts.ebitda == [150.0]
     assert stmts.total_debt == [450.0]
+
+
+def test_from_edgar_sums_distinct_current_debt_components():
+    facts = _facts(
+        LongTermDebtNoncurrent={"units": {"USD": [_entry(2024, 400.0)]}},
+        LongTermDebtCurrent={"units": {"USD": [_entry(2024, 25.0)]}},
+        ShortTermBorrowings={"units": {"USD": [_entry(2024, 75.0)]}},
+    )
+
+    assert AnnualStatements.from_edgar(facts).total_debt == [500.0]
 
 
 def test_from_edgar_empty_or_none_facts_gives_no_years():

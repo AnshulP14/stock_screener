@@ -1,8 +1,7 @@
-"""Transform raw fetch data into company JSONs with trends."""
+"""Transform raw fetch data into company JSONs with aligned annual series."""
 
 from datetime import date
 from itertools import pairwise
-from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -69,12 +68,11 @@ def build_current_snapshot(
     }
 
 
-def drawdown_52w(path: Path) -> float | None:
-    """Calculate peak-to-trough drawdown from a cached adjusted-price CSV."""
-    try:
-        prices = pd.read_csv(path, usecols=["date", "adjusted_close"])
-    except (OSError, ValueError):
+def drawdown_52w(prices: pd.DataFrame) -> float | None:
+    """Calculate peak-to-trough drawdown from adjusted-price observations."""
+    if prices.empty or not {"date", "adjusted_close"} <= set(prices.columns):
         return None
+    prices = prices[["date", "adjusted_close"]].copy()
     prices["date"] = pd.to_datetime(prices["date"], errors="coerce")
     prices["adjusted_close"] = pd.to_numeric(prices["adjusted_close"], errors="coerce")
     prices = prices.dropna().query("adjusted_close > 0").sort_values("date")
@@ -89,25 +87,13 @@ def drawdown_52w(path: Path) -> float | None:
 
 # ── Trend computation ───────────────────────────────────────────────
 
-def _compute_operating_margin(rev, op):
-    m = []
-    for r, o in zip(rev, op):
-        if safe_float(r) and safe_float(o) and r != 0:
-            m.append(o / r)
-        else:
-            m.append(None)
-    return m
-
-
-def build_trends(
+def build_series(
     statements: AnnualStatements,
-    series_spec: tuple,
     *,
     source: str,
     regulatory: dict[int, dict[str, float | None]] | None = None,
 ) -> dict[str, Any]:
     """Build positionally aligned annual statement and derived series."""
-    del series_spec  # Phase 3B has one shared profile layout for both markets.
     regulatory = regulatory or {}
     years = sorted(set(statements.years) | set(regulatory))
     if not years:
@@ -187,38 +173,34 @@ def build_trends(
     return out
 
 
-def build_historical_trends(
+def build_historical_series(
     data: dict[str, Any],
     market: MarketConfig = NSE,
     *,
     regulatory: dict[int, dict[str, float | None]] | None = None,
 ) -> dict[str, Any]:
-    """Compute historical trends from yfinance annual data (NSE only)."""
+    """Compute aligned historical series from Yahoo annual data."""
     statements = AnnualStatements.from_yfinance(
         data.get("annual_income", pd.DataFrame()),
         data.get("annual_balance", pd.DataFrame()),
         data.get("annual_cashflow", pd.DataFrame()),
         market.fiscal_year,
     )
-    return build_trends(
-        statements, market.trend_series, source="yfinance", regulatory=regulatory,
-    )
+    return build_series(statements, source="yfinance", regulatory=regulatory)
 
 
-def build_historical_trends_edgar(
+def build_historical_series_edgar(
     facts: dict | None,
     market: MarketConfig | None = None,
     *,
     regulatory: dict[int, dict[str, float | None]] | None = None,
 ) -> dict[str, Any]:
-    """Build S&P historical trends from SEC companyfacts."""
+    """Build aligned S&P historical series from SEC companyfacts."""
     if market is None:
         from .market import SNP as _snp
         market = _snp
     statements = AnnualStatements.from_edgar(facts)
-    return build_trends(
-        statements, market.trend_series, source="edgar_xbrl", regulatory=regulatory,
-    )
+    return build_series(statements, source="edgar_xbrl", regulatory=regulatory)
 
 
 def build_institutional_ownership(data: dict[str, Any]) -> dict | None:
@@ -252,18 +234,10 @@ def build_institutional_ownership(data: dict[str, Any]) -> dict | None:
 
 # ── Insights ────────────────────────────────────────────────────────
 
-def generate_insights(trends: dict[str, Any]) -> list[str]:
-    """Generate 3-5 key insights from computed trends."""
-    insights = []
-
-    rcagr = cagr(trends.get("revenue", []))
-    ecagr = cagr(trends.get("diluted_eps", []))
-    if rcagr is not None:
-        insights.append(f"Revenue CAGR: {rcagr*100:+.1f}%")
-    if ecagr is not None:
-        insights.append(f"EPS CAGR: {ecagr*100:+.1f}%")
-
-    return insights[:5]
+def generate_insights(series: dict[str, Any]) -> list[str]:
+    """Leave screening and trend signals to Phase 3C."""
+    del series
+    return []
 
 
 # ── Full company JSON ───────────────────────────────────────────────
@@ -272,7 +246,7 @@ def build_company_json(
     symbol: str,
     data: dict[str, Any],
     metadata: dict[str, dict] | None = None,
-    historical_trends: dict[str, Any] | None = None,
+    historical_series: dict[str, Any] | None = None,
     market: MarketConfig = NSE,
     cik: int | None = None,
     institutional_ownership: dict | None = None,
@@ -295,8 +269,9 @@ def build_company_json(
         "cik": cik,
         **extra_fields,
         "current_snapshot": snapshot,
-        "historical_trends": historical_trends or {},
-        "key_insights": generate_insights(historical_trends or {}),
+        # Keep the persisted key until the curated-schema migration in Phase 3C.
+        "historical_trends": historical_series or {},
+        "key_insights": generate_insights(historical_series or {}),
         "institutional_ownership": institutional_ownership,
     }
 

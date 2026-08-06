@@ -204,7 +204,7 @@ def test_parse_ffiec_history_selects_rssd_and_normalizes_percent_units(tmp_path)
     assert history == {2024: {
         "nonperforming_loans_ratio": 0.03,
         "cet1_ratio": 0.156,
-        "loans": 100.0,
+        "loans": 100_000.0,
         "deposits": None,
     }}
     assert regulatory.parse_ffiec_history(9999999, cache_dir=tmp_path) == {}

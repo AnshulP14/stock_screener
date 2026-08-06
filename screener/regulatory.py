@@ -223,7 +223,7 @@ def ffiec_rssd_ids(path: Path) -> set[int]:
 def parse_nse_bank_history(
     symbol: str, *, cache_root: Path | None = None,
 ) -> dict[int, dict[str, float | None]]:
-    """Parse cached NSE banking XBRL into annual profile inputs."""
+    """Stream cached NSE banking XBRL into annual profile inputs."""
     root = cache_root or RAW_DIR / "nse" / "bank_xbrl"
     history = {}
     tags = {
@@ -236,18 +236,20 @@ def parse_nse_bank_history(
     for path in sorted((root / symbol).glob("*.xml")):
         try:
             year = int(path.stem)
-            elements = sorted(
-                ElementTree.parse(path).getroot().iter(),
-                key=lambda element: not element.attrib.get("contextRef", "").startswith("One"),
-            )
         except (OSError, ValueError, ElementTree.ParseError):
             continue
-        values: dict[str, float | None] = {}
-        for element in elements:
-            local_name = element.tag.rsplit("}", 1)[-1]
-            output_name = tags.get(local_name)
-            if output_name and output_name not in values:
-                values[output_name] = safe_float(element.text)
+        selected: dict[str, tuple[bool, float | None]] = {}
+        try:
+            for _, element in ElementTree.iterparse(path, events=("end",)):
+                output_name = tags.get(element.tag.rsplit("}", 1)[-1])
+                if output_name:
+                    preferred = element.attrib.get("contextRef", "").startswith("One")
+                    if output_name not in selected or preferred > selected[output_name][0]:
+                        selected[output_name] = (preferred, safe_float(element.text))
+                element.clear()
+        except (OSError, ElementTree.ParseError):
+            continue
+        values = {name: value for name, (_, value) in selected.items()}
         if values:
             history[year] = {output: values.get(output) for output in tags.values()}
     return history
@@ -289,7 +291,8 @@ def parse_ffiec_history(
             history[year] = {
                 "nonperforming_loans_ratio": npl_ratio,
                 "cet1_ratio": cet1 / 100 if cet1 is not None else None,
-                "loans": loans,
+                # FR Y-9C balance-sheet amounts are reported in USD thousands.
+                "loans": loans * 1000 if loans is not None else None,
                 "deposits": None,
             }
         except (OSError, ValueError, zipfile.BadZipFile, StopIteration):

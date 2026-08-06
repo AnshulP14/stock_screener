@@ -51,7 +51,6 @@ class AnnualLineItems:
     diluted_eps: float | None = None
     gross_profit: float | None = None
     operating_income: float | None = None
-    free_cash_flow: float | None = None
     total_debt: float | None = None
     stockholders_equity: float | None = None
     operating_cash_flow: float | None = None
@@ -71,7 +70,6 @@ _FIELD_SOURCES = [
     ("diluted_eps", "income", "Diluted EPS"),
     ("gross_profit", "income", "Gross Profit"),
     ("operating_income", "income", "Operating Income"),
-    ("free_cash_flow", "cashflow", "Free Cash Flow"),
     ("total_debt", "balance", "Total Debt"),
     ("stockholders_equity", "balance", "Stockholders Equity"),
     ("operating_cash_flow", "cashflow", "Operating Cash Flow"),
@@ -118,9 +116,11 @@ _EDGAR_DEBT_TAGS = {
         "LongTermDebtNoncurrent",
         "LongTermDebtAndFinanceLeaseObligationsNoncurrent",
     ),
-    "current": (
+    "current_long_term": (
         "LongTermDebtCurrent",
         "LongTermDebtAndFinanceLeaseObligationsCurrent",
+    ),
+    "short_term": (
         "ShortTermBorrowings",
     ),
 }
@@ -224,8 +224,16 @@ class AnnualStatements:
 
         direct_debt = _edgar_tag_values(us_gaap, _EDGAR_DEBT_TAGS["direct"])
         noncurrent_debt = _edgar_tag_values(us_gaap, _EDGAR_DEBT_TAGS["noncurrent"])
-        current_debt = _edgar_tag_values(us_gaap, _EDGAR_DEBT_TAGS["current"])
-        debt_years = set(direct_debt) | (set(noncurrent_debt) & set(current_debt))
+        current_long_term = _edgar_tag_values(
+            us_gaap, _EDGAR_DEBT_TAGS["current_long_term"],
+        )
+        short_term = _edgar_tag_values(us_gaap, _EDGAR_DEBT_TAGS["short_term"])
+        current_years = set(current_long_term) | set(short_term)
+        current_debt = {
+            year: current_long_term.get(year, 0) + short_term.get(year, 0)
+            for year in current_years
+        }
+        debt_years = set(direct_debt) | (set(noncurrent_debt) & current_years)
         per_field["total_debt"] = {
             year: (
                 direct_debt[year]

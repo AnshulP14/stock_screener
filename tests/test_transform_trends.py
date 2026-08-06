@@ -5,7 +5,7 @@ import pytest
 
 from screener.transform import (
     average_roe,
-    build_historical_trends,
+    build_historical_series,
     cagr,
     classify_growth,
     classify_leverage,
@@ -85,7 +85,7 @@ def test_yoy_and_cagr():
 
 
 def test_historical_trends_use_aligned_margin_and_average_balance_roe_values():
-    trends = build_historical_trends(_data())
+    trends = build_historical_series(_data())
     assert trends["operating_margin"] == pytest.approx([0.08, 0.09, 0.10])
     assert trends["roe"] == [None, pytest.approx(0.20), pytest.approx(0.30)]
 
@@ -97,11 +97,10 @@ def test_roe_aligns_income_and_equity_by_fiscal_year():
         FY_ENDS[2]: {"Total Debt": 160.0, "Stockholders Equity": 200.0},
     })
 
-    assert build_historical_trends(data)["roe"] == [
+    assert build_historical_series(data)["roe"] == [
         None, None, pytest.approx(0.15),
     ]
 
 
 def test_generate_insights_accepts_aligned_series():
-    insights = generate_insights(build_historical_trends(_data()))
-    assert "Revenue CAGR: +0.0%" in insights
+    assert generate_insights(build_historical_series(_data())) == []

@@ -60,30 +60,10 @@ def _metric_value(c: dict, group: str, field: str):
     """Look up a metric value from a company dict via its current_snapshot
     sub-struct (e.g. "profitability") or a historical_trends.<series> path."""
     if group.startswith("historical_trends."):
-        return _history_value(c, group.split(".", 1)[1], field)
+        sub = c.get("historical_trends", {}).get(group.split(".", 1)[1], {})
     else:
         sub = c.get("current_snapshot", {}).get(group, {})
-    return _safe_float(sub.get(field))
-
-
-def _history_value(company: dict, series: str, field: str):
-    history = company.get("historical_trends", {})
-    values = history.get(series, {})
-    if series == "eps" and not values:
-        values = history.get("diluted_eps", {})
-    if isinstance(values, dict):
-        return _safe_float(values.get(field))
-    if not isinstance(values, list) or field != "cagr_3yr":
-        return None
-    years = history.get("fiscal_years", [])
-    if not years:
-        return None
-    by_year = dict(zip(years, values))
-    end = _safe_float(by_year.get(years[-1]))
-    start = _safe_float(by_year.get(years[-1] - 3))
-    if start is None or end is None or start <= 0 or end <= 0:
-        return None
-    return (end / start) ** (1 / 3) - 1
+    return _safe_float(sub.get(field)) if isinstance(sub, dict) else None
 
 
 # ── Flat screening_summary schema ────────────────────────────────────
@@ -95,7 +75,11 @@ def _snapshot(group: str, field: str) -> Callable[[dict], Any]:
 
 
 def _trend(series: str, field: str) -> Callable[[dict], Any]:
-    return lambda c: _history_value(c, series, field)
+    return lambda c: (
+        values.get(field)
+        if isinstance((values := c.get("historical_trends", {}).get(series, {})), dict)
+        else None
+    )
 
 
 def _ownership(field: str) -> Callable[[dict], Any]:

@@ -40,7 +40,6 @@ class MarketConfig:
     raw_csv_dir: Path | None = None
     uses_edgar: bool = False
     metadata_fields: dict[str, str] = field(default_factory=dict)
-    trend_series: tuple[tuple[str, str], ...] = ()
 
 
 def _nse_fiscal_year(d: date) -> int:
@@ -90,16 +89,6 @@ NSE = MarketConfig(
     enrichment_datasets=("shareholding", "credit_ratings"),
     raw_csv_dir=RAW_DIR / "nse",
     metadata_fields={"isin": "isin_code", "nse_industry": "nse_industry"},
-    trend_series=(
-        ("revenue", "revenue"),
-        ("net_income", "net_income"),
-        ("eps", "diluted_eps"),
-        ("gross_profit", "gross_profit"),
-        ("operating_income", "operating_income"),
-        ("free_cash_flow", "free_cash_flow"),
-        ("total_debt", "total_debt"),
-        ("stockholders_equity", "stockholders_equity"),
-    ),
 )
 
 SNP = MarketConfig(
@@ -115,14 +104,6 @@ SNP = MarketConfig(
     staleness_policies=_snp_staleness_policies,
     uses_edgar=True,
     metadata_fields={"gics_sector": "gics_sector", "gics_industry": "gics_industry"},
-    trend_series=(
-        ("revenue", "revenue"),
-        ("net_income", "net_income"),
-        ("eps", "diluted_eps"),
-        ("gross_profit", "gross_profit"),
-        ("operating_income", "operating_income"),
-        ("operating_cash_flow", "operating_cash_flow"),
-    ),
 )
 
 
