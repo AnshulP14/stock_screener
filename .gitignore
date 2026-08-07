@@ -25,6 +25,8 @@ env/
 # Data — regenerable from public sources, not in git.
 # Bootstrap: python scripts/data_refresh.py --mode full
 data/*
+docs*
+reports*
 !data/SCHEMA.md
 
 # IDE
