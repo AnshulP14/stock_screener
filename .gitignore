@@ -22,6 +22,13 @@ env/
 # Logs
 *.log
 
+# Durable advisory state — private and NOT regenerable. Back up separately.
+private/
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
+
 # Data — regenerable from public sources, not in git.
 # Bootstrap: python scripts/data_refresh.py --mode full
 data/*

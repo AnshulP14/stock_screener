@@ -37,7 +37,7 @@ set up the data"; the `refresh-data` skill has the full first-time-setup walkthr
 
 ## Skills
 
-This repo ships three skills in `.agents/skills/`. Pi loads them automatically when
+This repo ships four skills in `.agents/skills/`. Pi loads them automatically when
 you open the repo; each is also available as a `/skill:name` command. Each `SKILL.md`
 is the source of truth for its area — this README doesn't restate it.
 
@@ -46,6 +46,26 @@ is the source of truth for its area — this README doesn't restate it.
 | **screen-stocks** | `/skill:screen-stocks` | Screening, ranking, comparisons, company profiles |
 | **refresh-data** | `/skill:refresh-data` | Bootstrap, update, or fix stale data |
 | **analyse-statements** | `/skill:analyse-statements` | Reading and comparing 10-K / annual report filings |
+| **trading-desk** | `/skill:trading-desk` | Technical screens, manual portfolio ledger, persistent research, advisory tickets and Telegram |
+
+## Advisory trading desk
+
+The optional [advisory desk](ADVISORY.md) adds US/India daily technical screening,
+manual trade/portfolio tracking, searchable research history, Kite-style trade plans,
+and opt-in Telegram alerts. **No broker connection or order execution.**
+
+```bash
+uv run python scripts/desk.py init
+uv run python scripts/desk.py watch nse INFY
+uv run python scripts/desk.py watch snp AAPL
+uv run python scripts/desk.py check --refresh --briefing  # dry run
+```
+
+Portfolio/risk details can be supplied later; trade ideas remain unsized meanwhile.
+Durable personal state lives in gitignored `private/`, separate from regenerable
+`data/`; back it up. See [ADVISORY.md](ADVISORY.md) for imports, limitations, Telegram
+credentials and opt-in scheduling. Automated checks flag candidates; deep research is
+performed by the agent using the persistent `trading-desk` workflow.
 
 ---
 

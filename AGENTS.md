@@ -127,6 +127,24 @@ The `SKILL.md` files in `.agents/skills/` are the command and workflow sources o
 | `refresh-data` | Bootstrap, update, or repair market data |
 | `screen-stocks` | Screen, rank, compare, or profile companies with SQL |
 | `analyse-statements` | Navigate and compare annual reports and 10-Ks |
+| `trading-desk` | Technical screens, persistent research, manual ledger, advisory trade tickets, Telegram |
+
+## Advisory desk
+
+See `ADVISORY.md` and `.agents/skills/trading-desk/SKILL.md` for schemas and workflows.
+`scripts/desk.py` is a thin entry point over `screener/desk_cli.py`, `desk.py`,
+`technicals.py`, `tickets.py`, `monitor.py`, and `notifications.py`.
+
+- Advisory only: no broker connection, order execution, or inferred fills.
+- Durable, private state is `private/desk.sqlite3` (or `SCREENER_DESK_DIR`), **not**
+  regenerable `data/`. Never commit personal imports, state, or Telegram secrets.
+- Suggestions stay unsized until actual user cash/risk limits exist. A proposal never
+  changes holdings. Ledger updates require reported confirmed trades/actions.
+- Signals use completed daily bars (today excluded); prices expose bar/retrieval dates.
+  Automated checks are deterministic, not autonomous LLM/news research.
+- Telegram sends require explicit `--telegram` and environment credentials. Scheduling
+  is opt-in and not installed automatically. Deep research uses the agent skill and
+  preserves immutable source/note/ticket revisions across sessions.
 
 ## Web research
 
